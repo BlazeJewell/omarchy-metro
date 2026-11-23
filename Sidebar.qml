@@ -1569,7 +1569,8 @@ Item {
     var q = root.addQuery.toLowerCase().trim()
     var terms = q ? q.split(/\s+/) : []
     function match(text) { text = String(text).toLowerCase(); return terms.every(function(t) { return text.indexOf(t) >= 0 }) }
-    var hidden = root.editSections.filter(function(e) { return root.setting(e.id, "show") === false })
+    // built-in sections that are off (widget sections that are off go with their kind below)
+    var hidden = root.editSections.filter(function(e) { return e.id.indexOf("w:") !== 0 && root.setting(e.id, "show") === false })
       .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Section" } })
     var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : {}
     var omarchy = [], plugins = []
@@ -1579,6 +1580,16 @@ Item {
                   cat: String(meta.category || (meta.barWidget && meta.barWidget.category) || "") }
       ;(meta.firstParty ? omarchy : plugins).push(row)
     })
+    // widget sections already added but hidden: show them again, filed by kind
+    root.extraSections.forEach(function(e) {
+      if (root.setting(e.id, "show") !== false) return
+      var wid = root.widgetOf(e.id)
+      var meta = w[wid] && w[wid].metadata ? w[wid].metadata : {}
+      var row = { kind: "hidden", id: e.id, name: root.widgetName(wid), desc: "Hidden — show it again", cat: String(meta.category || "") }
+      ;(meta.firstParty ? omarchy : plugins).push(row)
+    })
+    omarchy.sort(function(a, b) { return a.name.localeCompare(b.name) })
+    plugins.sort(function(a, b) { return a.name.localeCompare(b.name) })
     var out = []
     function group(title, rows) {
       rows = rows.filter(function(r) { return match(r.name + " " + r.desc + " " + r.cat + " " + r.id) })
