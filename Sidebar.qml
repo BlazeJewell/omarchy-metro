@@ -1,0 +1,4337 @@
+import Quickshell
+import Quickshell.Hyprland
+import Quickshell.Io
+import Quickshell.Services.SystemTray
+import Quickshell.Services.Pipewire
+import Quickshell.Bluetooth
+import Quickshell.Networking
+import Quickshell.Wayland
+import Quickshell.Widgets
+import QtQuick
+import QtQuick.Layouts
+import qs.Commons
+import qs.Commons as Commons
+import "MenuModel.js" as MenuModel
+
+// A wide sidebar on the left edge that replaces the Omarchy bar:
+// clock, system stats, workspaces, launcher, open windows, tray, and the
+// stock Omarchy status widgets (their popups open beside the sidebar).
+//
+// Options live in shell.json under "bar":
+//   "sidebarWidth": 280
+//   "sidebarWidgets": ["omarchy.menu", "omarchy.bluetooth", ...]
+Item {
+  id: root
+
+  // ---- injected by the omarchy-shell host -------------------------------
+  property string omarchyPath: Quickshell.env("OMARCHY_PATH")
+  property var shell: null
+  property var manifest: null
+  property var pluginRegistry: null
+  property var barConfig: ({})
+  property var barWidgetRegistry: QtObject {
+    property var widgets: ({})
+    property int revision: 0
+    function metadataFor(id) { return null }
+  }
+
+  // ---- what the host and other plugins read off the active bar -----------
+  readonly property int sidebarWidth: {
+    var s = root.userSettings ? root.userSettings.width : undefined
+    if (s >= 200) return Math.round(s)
+    var w = barConfig && barConfig.sidebarWidth
+    return w > 120 ? Math.round(w) : 280
+  }
+  readonly property var widgetIds: {
+    var list = barConfig && barConfig.sidebarWidgets
+    return Array.isArray(list) ? list : [
+      "omarchy.menu", "omarchy.system-update", "omarchy.agents", "omarchy.bluetooth",
+      "omarchy.network", "omarchy.audio", "omarchy.monitor", "omarchy.power"
+    ]
+  }
+  // Plugin widgets the sidebar shows in its bottom row: everything in the bar's
+  // tray section, plus any third-party widget placed anywhere in the bar layout
+  // (Omarchy's own widgets are covered by the sidebar itself).
+  readonly property var pluginEntries: {
+    var layout = barConfig && barConfig.layout ? barConfig.layout : {}
+    var out = [], seen = {}
+    function add(e) {
+      var id = e && (typeof e === "string" ? e : e.id)
+      if (!id || seen[id] || root.widgetIds.indexOf(id) !== -1 || id === "omarchy.tray") return
+      seen[id] = true
+      out.push(typeof e === "string" ? { id: e } : e)
+    }
+    ;(layout.tray || []).forEach(add)
+    ;["left", "centerBegin", "center", "centerEnd", "right"].forEach(function(sec) {
+      (layout[sec] || []).forEach(function(e) {
+        var id = e && (typeof e === "string" ? e : e.id)
+        if (id && String(id).indexOf("omarchy.") !== 0) add(e)
+      })
+    })
+    return out
+  }
+  // Plugin widgets / tray icons hidden from the sidebar ("tray:<id>" for tray
+  // icons), kept in ~/.config/omarchy/sidebar-hidden.json (not shell.json).
+  readonly property string hiddenPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-hidden.json"
+  property var hiddenIds: []
+  property var pendingHidden: null
+  readonly property var hiddenNow: root.pendingHidden || root.hiddenIds
+  FileView {
+    path: root.hiddenPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); if (Array.isArray(v)) root.hiddenIds = v } catch (e) {} root.pendingHidden = null }
+  }
+  function isHidden(id) { return root.hiddenNow.indexOf(String(id)) !== -1 }
+  function setHidden(id, hide) {
+    id = String(id)
+    var list = root.hiddenNow.filter(function(x) { return x !== id })
+    if (hide) list.push(id)
+    root.pendingHidden = list
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(list), root.hiddenPath])
+  }
+  function trayLabel(t) { return String(t.tooltipTitle || t.title || t.id || "Tray icon") }
+  readonly property var trayItemsShown: SystemTray.items.values.filter(function(t) { return !root.isHidden("tray:" + t.id) })
+  property string position: "left"
+  readonly property bool vertical: true
+  readonly property int barSize: sidebarWidth
+  property bool barHidden: false
+  readonly property string fontFamily: Style.font.family
+  readonly property color foreground: Commons.Color.bar.text
+  readonly property color barForeground: Commons.Color.bar.text
+  readonly property color background: Commons.Color.bar.background
+  readonly property color urgent: Commons.Color.bar.active
+  readonly property color dim: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.55)
+  readonly property color faint: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.12)
+  readonly property var screenBarSizes: {
+    var sizes = ({})
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) sizes[screens[i].name] = root.sidebarWidth
+    return sizes
+  }
+  property bool debugBarGeometry: false
+
+  function run(command) { Quickshell.execDetached(["bash", "-c", String(command || "")]) }
+  function cycleBackground() {}
+
+  // ---- popout coordination + panel summoning (Super+Ctrl+A etc.) ---------
+  property var activePopout: null
+  property var clickTargets: []
+  property var hostedItems: []
+
+  function requestPopout(owner) {
+    if (activePopout === owner) return
+    if (activePopout) {
+      if ("closeForPopoutSwitch" in activePopout) activePopout.closeForPopoutSwitch()
+      else if ("close" in activePopout) activePopout.close()
+    }
+    activePopout = owner
+  }
+  function releasePopout(owner) { if (activePopout === owner) activePopout = null }
+
+  function moduleWidgets(id) {
+    return hostedItems.filter(function(h) { return h && h.moduleName === String(id) && h.item })
+                      .map(function(h) { return h.item })
+  }
+  function findPanelWidget(id) {
+    var items = moduleWidgets(id)
+    if (items.length === 0) return null
+    var focused = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    for (var i = 0; i < items.length; i++) {
+      var w = items[i].QsWindow ? items[i].QsWindow.window : null
+      if (w && w.screen && w.screen.name === focused) return items[i]
+    }
+    return items[0]
+  }
+  function summonBarWidget(id) {
+    var item = findPanelWidget(id)
+    if (!item || typeof item.open !== "function") return false
+    item.open(); return true
+  }
+  function hideBarWidget(id) {
+    var item = findPanelWidget(id)
+    if (!item || typeof item.close !== "function") return false
+    item.close(); return true
+  }
+  function isBarWidgetOpen(id) {
+    var item = findPanelWidget(id)
+    return !!item && item.opened === true
+  }
+  function panelWidgetIdAt(region, index) {
+    var id = widgetIds[Math.round(Number(index)) - 1]
+    return id ? String(id) : ""
+  }
+
+  // The object handed to hosted Omarchy widgets as their `bar`. They are drawn
+  // icon-only (vertical mode) at the normal 28px, while their popups are told
+  // the strip is as wide as the sidebar so they open beside it.
+  QtObject {
+    id: widgetBar
+    readonly property var shell: root.shell
+    readonly property color foreground: root.foreground
+    readonly property color barForeground: root.barForeground
+    readonly property color background: root.background
+    readonly property color urgent: root.urgent
+    readonly property string fontFamily: root.fontFamily
+    readonly property string position: "left"
+    readonly property bool vertical: true
+    readonly property int barSize: Style.bar.sizeVertical
+    readonly property int sizeHorizontal: Style.bar.sizeHorizontal
+    readonly property int iconSlot: Style.bar.iconSlot
+    readonly property int statusSlot: Style.bar.statusSlot
+    readonly property int iconSize: Style.bar.iconSize
+    readonly property int iconCanvas: Style.bar.iconCanvas
+    readonly property int iconFont: Style.bar.iconFont
+    readonly property bool transparent: false
+    readonly property bool barHidden: false
+    readonly property bool foregroundAnimationEnabled: true
+    readonly property bool centerSectionRevealHeld: false
+    readonly property bool centerHoverRevealSuppressed: false
+    readonly property bool traySectionDragActive: false
+    readonly property bool traySectionPopoutOpen: false
+    readonly property bool microphoneMuted: false
+    readonly property bool microphoneLive: false
+    readonly property bool microphoneInUse: false
+    readonly property int pendingUpdates: 0
+    readonly property var layoutConfig: ({ left: [], centerBegin: [], center: [], centerEnd: [], right: root.widgetIds.map(function(id) { return { id: id } }), tray: [] })
+    readonly property var activePopout: root.activePopout
+    readonly property var clickTargets: root.clickTargets
+
+    function barSizeFor(screenName) { return root.sidebarWidth }
+    function run(command) { root.run(command) }
+    function requestPopout(owner) { root.requestPopout(owner); Qt.callLater(root.dockOpenPanel); dockRetry.restart() }
+    function releasePopout(owner) { root.releasePopout(owner) }
+    function notePopoutCard(card) {}
+    function popoutCardFor(owner) { return null }
+    function switchPanelFrom(owner, direction) { return false }
+    function moduleWidgets(id) { return root.moduleWidgets(id) }
+    function registerClickTarget(target) {
+      if (target && root.clickTargets.indexOf(target) === -1) root.clickTargets = root.clickTargets.concat([target])
+    }
+    function unregisterClickTarget(target) {
+      root.clickTargets = root.clickTargets.filter(function(t) { return t !== target })
+    }
+    function targetBelongsToWindow(target, window) {
+      var w = target && target.QsWindow ? target.QsWindow.window : null
+      return !!w && !!window && (w === window || w.screen === window.screen)
+    }
+    function setCenterHoverRevealSuppressed(value) {}
+    function showTooltip(target, text) { tooltip.show(target, text) }
+    function hideTooltip(target) { tooltip.hide(target) }
+  }
+
+  // ---- system stats (one small poll every 2s) ----------------------------
+  property real cpu: 0
+  property real mem: 0
+  property real disk: 0
+  property real rxRate: 0
+  property real txRate: 0
+  property var rxHistory: []
+  property var txHistory: []
+  property var _lastCpu: null
+  property var _lastNet: null
+
+  function parseStats(text) {
+    var lines = String(text).split("\n")
+    var memTotal = 0, memAvail = 0
+    for (var i = 0; i < lines.length; i++) {
+      var f = lines[i].trim().split(/\s+/)
+      if (f[0] === "cpu") {
+        var nums = f.slice(1).map(Number)
+        var idle = nums[3] + (nums[4] || 0)
+        var total = nums.reduce(function(a, b) { return a + b }, 0)
+        if (_lastCpu && total > _lastCpu.total)
+          cpu = 100 * (1 - (idle - _lastCpu.idle) / (total - _lastCpu.total))
+        _lastCpu = { idle: idle, total: total }
+      } else if (f[0] === "MemTotal:") memTotal = Number(f[1])
+      else if (f[0] === "MemAvailable:") memAvail = Number(f[1])
+      else if (f[0] === "disk") disk = parseInt(f[1])
+      else if (f[0] === "net") {
+        var now = Date.now(), rx = Number(f[1]), tx = Number(f[2])
+        if (_lastNet) {
+          var dt = (now - _lastNet.t) / 1000
+          rxRate = Math.max(0, (rx - _lastNet.rx) / dt)
+          txRate = Math.max(0, (tx - _lastNet.tx) / dt)
+          rxHistory = rxHistory.concat([rxRate]).slice(-24)
+          txHistory = txHistory.concat([txRate]).slice(-24)
+        }
+        _lastNet = { t: now, rx: rx, tx: tx }
+      }
+    }
+    if (memTotal > 0) mem = 100 * (1 - memAvail / memTotal)
+  }
+
+  function rateParts(bytesPerSec) {
+    var bits = bytesPerSec * 8
+    if (bits >= 1e9) return [(bits / 1e9).toFixed(1), "Gbps"]
+    if (bits >= 1e6) return [(bits / 1e6).toFixed(bits >= 1e8 ? 0 : 1), "Mbps"]
+    return [Math.round(bits / 1e3).toString(), "Kbps"]
+  }
+
+  Process {
+    id: statsProc
+    command: ["sh", "-c",
+      "head -1 /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; " +
+      "df -P / | awk 'NR==2{print \"disk\", $5}'; " +
+      "awk 'NR>2 && $1 != \"lo:\" {rx+=$2; tx+=$10} END {print \"net\", rx, tx}' /proc/net/dev"]
+    stdout: StdioCollector { onStreamFinished: root.parseStats(text) }
+  }
+  Timer {
+    interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: true; repeat: true; triggeredOnStart: true
+    onTriggered: statsProc.running = true
+  }
+
+  SystemClock { id: clock; precision: root.setting("clock", "seconds") ? SystemClock.Seconds : SystemClock.Minutes }
+
+
+  // ---- pinned apps --------------------------------------------------------
+  // Kept in ~/.config/omarchy/sidebar-pins.json, not shell.json: any write to
+  // shell.json makes the shell rebuild the bar, which shoves windows around.
+  readonly property string pinsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-pins.json"
+  property var savedPins: []
+  property var pendingPins: null
+  FileView {
+    path: root.pinsPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try { var v = JSON.parse(text()); if (Array.isArray(v)) root.savedPins = v } catch (e) {}
+      root.pendingPins = null
+    }
+  }
+  readonly property var pinnedIds: root.pendingPins || root.savedPins
+
+  function entryIdFor(appId) {
+    var e = DesktopEntries.heuristicLookup(appId)
+    return e ? e.id : appId
+  }
+
+  // [{ key, entry, windows: [HyprlandToplevel], separator }]
+  function appItems(monitorName) {
+    var appsRevision = DesktopEntries.applications.values.length
+    var byKey = {}
+    var order = []
+    var tl = Hyprland.toplevels.values
+    for (var i = 0; i < tl.length; i++) {
+      var w = tl[i].wayland
+      if (!w || w.parent) continue
+      var app = String(w.appId || "")
+      if (!app || app.toLowerCase().indexOf("fcitx") !== -1) continue
+      var ws = tl[i].workspace
+      if (ws && String(ws.name).indexOf("special:") === 0 && ws.name !== "special:minimized") continue
+      var key = root.entryIdFor(app)
+      if (!byKey[key]) { byKey[key] = []; order.push(key) }
+      byKey[key].push(tl[i])
+    }
+    var orderRev = root.windowOrderRev
+    for (var ok in byKey) {
+      var wOrder = root.windowOrder[ok]
+      if (!wOrder) continue
+      byKey[ok].sort(function(a, b) {
+        var ia = wOrder.indexOf(root.addrOf(a)), ib = wOrder.indexOf(root.addrOf(b))
+        return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib)
+      })
+    }
+    var out = []
+    var seen = {}
+    for (var p = 0; p < root.pinnedIds.length; p++) {
+      var pin = root.pinnedIds[p]
+      if (pin && typeof pin === "object") {
+        // an app with no launcher entry, pinned by its window class + command
+        if (!pin["class"]) continue
+        seen[pin["class"]] = true
+        out.push({ key: pin["class"], entry: null, custom: pin, windows: byKey[pin["class"]] || [], separator: false, pinned: true })
+        continue
+      }
+      var id = String(pin)
+      var entry = DesktopEntries.byId(id)
+      if (!entry) continue
+      seen[id] = true
+      out.push({ key: id, entry: entry, windows: byKey[id] || [], separator: false, pinned: true })
+    }
+    var extra = root.setting("apps", "running") ? order.filter(function(k) { return !seen[k] }) : []
+    if (extra.length > 0) out.push({ key: "--", entry: null, windows: [], separator: true, pinned: false })
+    for (var x = 0; x < extra.length; x++) {
+      var e = DesktopEntries.byId(extra[x]) || DesktopEntries.heuristicLookup(extra[x])
+      out.push({ key: extra[x], entry: e, windows: byKey[extra[x]], separator: false, pinned: false })
+    }
+    return out
+  }
+
+  function setPins(list) {
+    root.pendingPins = list
+    root.run("printf '%s\\n' " + Util.shellQuote(JSON.stringify(list)) + " > " + Util.shellQuote(root.pinsPath))
+  }
+  // Drop an app at a spot in the list: `index` counts the pinned rows; past
+  // them (the running section) a pinned app is unpinned.
+  function dropOnList(item, index) {
+    if (!item || item.separator) return
+    var rows = root.appItems("").filter(function(r) { return r.pinned })
+    var key = item.entry ? String(item.entry.id) : String(item.key)
+    if (index > rows.length) { if (item.pinned) root.togglePin(item); return }
+    var beforeKey = index < rows.length ? rows[index].key : null
+    if (beforeKey === key) return
+    var list = root.pinnedIds.slice()
+    var value = null
+    for (var i = 0; i < list.length; i++) if (root.pinKey(list[i]) === key) { value = list[i]; list.splice(i, 1); break }
+    if (value === null && !item.entry) {
+      // not pinned and no launcher entry: capture its command first, then place it
+      if (!item.windows || item.windows.length === 0) return
+      pinCapture.insertBefore = beforeKey
+      root.togglePin(item)
+      return
+    }
+    if (value === null) value = key
+    var at = list.length
+    if (beforeKey !== null) for (var j = 0; j < list.length; j++) if (root.pinKey(list[j]) === beforeKey) { at = j; break }
+    list.splice(at, 0, value)
+    root.setPins(list)
+  }
+  function pinKey(pin) { return pin && typeof pin === "object" ? String(pin["class"] || "") : String(pin) }
+  function togglePin(item) {
+    if (!item || item.separator) return
+    var key = item.entry ? String(item.entry.id) : String(item.key)
+    var list = root.pinnedIds.slice()
+    var at = -1
+    for (var i = 0; i < list.length; i++) if (root.pinKey(list[i]) === key) { at = i; break }
+    if (at >= 0) { list.splice(at, 1); root.setPins(list); return }
+    if (item.entry) { list.push(key); root.setPins(list); return }
+    // No launcher entry: remember the command its window was started with.
+    if (!item.windows || item.windows.length === 0) return
+    pinCapture.item = item
+    pinCapture.command = ["bash", "-c", "pid=$(hyprctl clients -j | jq -r --arg a \"$1\" 'first(.[] | select(.address == $a) | .pid) // empty'); [ -n \"$pid\" ] && jq -Rsc 'split(\"\\u0000\") | map(select(length > 0))' < /proc/$pid/cmdline", "sh", root.addrOf(item.windows[0])]
+    pinCapture.running = true
+  }
+  Process {
+    id: pinCapture
+    property var item: null
+    property var insertBefore: null
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var argv = []
+        try { argv = JSON.parse(String(text).trim() || "[]") } catch (e) {}
+        var it = pinCapture.item
+        if (!it || !Array.isArray(argv) || argv.length === 0) return
+        var list = root.pinnedIds.slice()
+        var value = { "class": String(it.key), name: root.displayName(it), argv: argv }
+        var at = list.length
+        if (pinCapture.insertBefore !== null) for (var j = 0; j < list.length; j++) if (root.pinKey(list[j]) === pinCapture.insertBefore) { at = j; break }
+        pinCapture.insertBefore = null
+        list.splice(at, 0, value)
+        root.setPins(list)
+      }
+    }
+  }
+  // How to start an item: its launcher entry, or the command a pinned window was started with.
+  function launchCommandFor(item) {
+    if (!item) return ""
+    if (item.entry) return root.launchCommand(item.entry)
+    var argv = item.custom && Array.isArray(item.custom.argv) ? item.custom.argv : []
+    return argv.length ? "uwsm-app -- " + argv.map(function(a) { return Util.shellQuote(String(a)) }).join(" ") : ""
+  }
+  function displayName(item) {
+    if (item.entry && item.entry.name) return item.entry.name
+    if (item.custom && item.custom.name) return item.custom.name
+    var key = String(item.key)
+    var t = item.windows && item.windows.length ? String(item.windows[0].title || "") : ""
+    if (key.indexOf("chrome-") === 0 && t) return t.split(" - ").pop().trim()
+    var last = key.split(".").pop()
+    return last.charAt(0).toUpperCase() + last.slice(1)
+  }
+
+  // Right-click menu for an app row: [{ label, act, danger }]
+  function appMenuEntries(item) {
+    if (!item) return []
+    var out = []
+    var running = item.windows && item.windows.length > 0
+    var front = running && item.windows.some(function(t) { return t.activated && !root.isMinimized(t) })
+    var allHidden = running && item.windows.every(function(t) { return root.isMinimized(t) })
+    out.push({ label: front ? "Minimize" : allHidden ? "Restore" : running ? "Focus" : "Open", act: "open" })
+    if (root.launchCommandFor(item)) out.push({ label: "New window", act: "new" })
+    if (item.entry || item.custom || (item.windows && item.windows.length > 0)) out.push({ label: item.pinned ? "Unpin" : "Pin", act: "pin" })
+    if (running) out.push({ label: item.windows.length > 1 ? "Close all windows" : "Close", act: "close", danger: true })
+    var actions = item.entry && item.entry.actions ? item.entry.actions : []
+    if (actions.length > 0) out.push({ sep: true })
+    for (var i = 0; i < actions.length; i++) out.push({ label: actions[i].name, act: "action", index: i })
+    return out
+  }
+  function runAppMenu(item, e) {
+    if (!item || !e) return
+    if (e.act === "open") root.activateApp(item)
+    else if (e.act === "new") { var nw = root.launchCommandFor(item); if (nw) root.run(nw) }
+    else if (e.act === "action") item.entry.actions[e.index].execute()
+    else if (e.act === "pin") root.togglePin(item)
+    else if (e.act === "close") {
+      var cmds = item.windows.map(function(t) {
+        var a = String(t.address || ""); if (a.indexOf("0x") !== 0) a = "0x" + a
+        return "hyprctl dispatch " + Util.shellQuote("hl.dsp.window.close({ window = \"address:" + a + "\" })") + " >/dev/null"
+      })
+      root.run(cmds.join("; "))
+    }
+  }
+
+  function launchCommand(entry) {
+    if (!entry) return ""
+    if (entry.runInTerminal) {
+      var cmd = (entry.command || []).filter(function(w) { return !/^%[a-zA-Z]$/.test(String(w)) })
+      return "omarchy-launch-tui " + cmd.map(function(w) { return Util.shellQuote(w) }).join(" ")
+    }
+    return "uwsm-app -- gtk-launch " + Util.shellQuote(entry.id + ".desktop")
+  }
+  function launchEntry(entry) {
+    var cmd = root.launchCommand(entry)
+    if (cmd) root.run(cmd)
+  }
+
+  // Drop an app at a global point: beside the tiled window there, on the
+  // side of it the point is on. An open app's window is moved there; one that
+  // isn't running is launched there.
+  readonly property string dropScript: Qt.resolvedUrl("drop.sh").toString().replace("file://", "")
+  function dropApp(item, gx, gy) {
+    if (!item || item.separator) return
+    var wins = item.windows || []
+    var pick = null
+    for (var i = 0; i < wins.length; i++) if (!root.isMinimized(wins[i])) { pick = wins[i]; break }
+    if (!pick && wins.length > 0) pick = wins[0]
+    var addr = "-"
+    if (pick) { addr = String(pick.address || ""); if (addr.indexOf("0x") !== 0) addr = "0x" + addr }
+    var launch = pick ? "-" : (root.launchCommandFor(item) || "-")
+    if (addr === "-" && launch === "-") return
+    if (launch !== "-") root.run(root.tileNextCommand())   // a dropped app opens beside, not alone
+    Quickshell.execDetached(["bash", root.dropScript, String(Math.round(gx)), String(Math.round(gy)), addr, launch])
+  }
+
+  // Not running: launch it. Running: focus it (cycling through its windows
+  // when it's already focused). The pointer is put back where it was, since
+  // Hyprland warps it to the focused window.
+  function isMinimized(t) { return !!t.workspace && t.workspace.name === "special:minimized" }
+  function windowTarget(t) {
+    var a = String(t.address || "")
+    if (a.indexOf("0x") !== 0) a = "0x" + a
+    return "window = \"address:" + a + "\""
+  }
+  // Run Hyprland dispatches, then put the pointer back where it was
+  // (Hyprland warps it on focus and workspace changes).
+  function dispatchKeepCursor(steps, tail, head) {
+    var parts = ["pos=$(hyprctl cursorpos); x=${pos%%,*}; y=${pos##*, }"]
+    if (head) parts.push(head)
+    steps.forEach(function(s) { parts.push("hyprctl dispatch " + Util.shellQuote(s) + " >/dev/null") })
+    if (tail) parts.push(tail)
+    parts.push("hyprctl dispatch \"hl.dsp.cursor.move({ x = $x, y = $y })\" >/dev/null")
+    var cmd = parts.join("; ")
+    root.run(cmd)
+  }
+
+  // ---- one app at a time ------------------------------------------------------
+  // An app opened or brought forward takes its workspace to itself: the other
+  // windows there are minimized (solo.sh). Shift+click tiles it alongside instead,
+  // and more windows from the same app (Steam + its chat) tile together.
+  readonly property string soloScript: Qt.resolvedUrl("solo.sh").toString().replace("file://", "")
+  readonly property string minimizeScript: Qt.resolvedUrl("minimize.sh").toString().replace("file://", "")
+  // The next new window tiles instead of opening alone (Shift+click, drag-and-drop):
+  // a short-lived note read by ~/.config/hypr/sidebar_solo.lua.
+  readonly property string tileNextFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-tile-next"
+  function tileNextCommand() { return "echo $(( $(date +%s) + 30 )) > " + Util.shellQuote(root.tileNextFile) }
+  // Shift state, written by pass-through Shift binds in ~/.config/hypr/bindings.lua
+  // (the sidebar has no keyboard focus, so it can't see modifiers itself).
+  property bool shiftHeld: false
+  FileView {
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-shift"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.shiftHeld = String(text()).trim() === "1"
+  }
+  function clearCommand(keep) {
+    var mon = Hyprland.focusedMonitor
+    var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
+    return "bash " + Util.shellQuote(root.soloScript) + " --clear " + here
+      + (keep || []).map(function(k) { return " " + Util.shellQuote(root.addrOf(k)) }).join("")
+  }
+  function addrOf(t) { var a = String(t.address || ""); return a.indexOf("0x") === 0 ? a : "0x" + a }
+
+  // Click on an app:
+  //   not running            -> launch it
+  //   in front (focused)     -> minimize its windows
+  //   open but not in front  -> bring it forward
+  //   only minimized windows -> restore them here and focus
+  // Order of an app's windows in its list, as rearranged by dragging (this session).
+  property var windowOrder: ({})
+  property int windowOrderRev: 0
+  function moveWindowTo(appKey, windows, t, index) {
+    var addrs = windows.map(function(w) { return root.addrOf(w) })
+    var a = root.addrOf(t)
+    var from = addrs.indexOf(a)
+    if (from < 0) return
+    addrs.splice(from, 1)
+    if (from < index) index--
+    addrs.splice(Math.max(0, Math.min(index, addrs.length)), 0, a)
+    var next = Object.assign({}, root.windowOrder)
+    next[appKey] = addrs
+    root.windowOrder = next
+    root.windowOrderRev++
+  }
+  // A single window, dragged on its own: looks like an app item holding just it.
+  function windowDragItem(app, t) {
+    return { key: app.key, entry: app.entry, custom: app.custom, windows: [t], separator: false, pinned: app.pinned,
+             windowOnly: true, label: String(t.title || root.displayName(app)), appWindows: app.windows }
+  }
+
+  // Overview (Super): every open window of the list, shown over the window area.
+  property bool overviewOpen: false
+  property string overviewMonitor: ""
+  // 0 = previews sit on the real windows, 1 = zoomed out into the grid
+  property real ovProgress: 0
+  Behavior on ovProgress { NumberAnimation { duration: Style.duration(280); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+  property var ovGeometry: ({})
+  function toggleOverview() {
+    if (root.overviewOpen) { root.closeOverview(); return }
+    root.overviewMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    ovGeoProc.running = true          // read where each window is, then zoom out
+  }
+  function closeOverview() { root.overviewOpen = false; root.ovProgress = 0 }
+  Process {
+    id: ovGeoProc
+    command: ["bash", "-c", "hyprctl clients -j | jq -c 'map({key: .address, value: {x: .at[0], y: .at[1], w: .size[0], h: .size[1]}}) | from_entries'"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try { root.ovGeometry = JSON.parse(text) } catch (e) { root.ovGeometry = ({}) }
+        root.overviewOpen = true
+        Qt.callLater(function() { root.ovProgress = 1 })
+      }
+    }
+  }
+  readonly property string pairScript: Qt.resolvedUrl("pair.sh").toString().replace("file://", "")
+  // Overview drag-and-drop: `dragged` beside `target` (side "l"/"r"), the rest minimized.
+  function pairWindows(target, dragged, side) {
+    var mon = Hyprland.focusedMonitor
+    var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
+    root.closeOverview()
+    Quickshell.execDetached(["bash", root.pairScript, root.addrOf(target), root.addrOf(dragged), side, String(here)])
+  }
+  function overviewWindows() {
+    var out = []
+    root.appItems("").forEach(function(r) { (r.windows || []).forEach(function(t) { out.push(t) }) })
+    // showing windows first, minimized after
+    return out.filter(function(t) { return !root.isMinimized(t) }).concat(out.filter(function(t) { return root.isMinimized(t) }))
+  }
+  function overviewAppName(t) {
+    var app = t && t.wayland ? String(t.wayland.appId || "") : ""
+    var rows = root.appItems("").filter(function(r) { return r.key === root.entryIdFor(app) })
+    return rows.length ? root.displayName(rows[0]) : (app.split(".").pop() || "Window")
+  }
+
+  // Apps with several windows can be expanded into a list of them.
+  property var expandedApps: ({})
+  function toggleExpanded(key) {
+    var next = Object.assign({}, root.expandedApps)
+    next[key] = !next[key]
+    root.expandedApps = next
+  }
+  // One window of an app: in front -> minimize it; otherwise show it on its own
+  // (others minimized first), or beside what's showing with Shift.
+  function activateWindow(t, tile) {
+    if (!t) return
+    if (!root.isMinimized(t) && t.activated) {
+      root.dispatchKeepCursor([], "bash " + Util.shellQuote(root.minimizeScript) + " " + Util.shellQuote(root.addrOf(t)))
+      return
+    }
+    var mon = Hyprland.focusedMonitor
+    var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
+    var steps = []
+    if (root.isMinimized(t)) {
+      steps.push("hl.dsp.window.move({ workspace = \"" + here + "\", follow = false, " + root.windowTarget(t) + " })")
+      steps.push("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })")
+    }
+    steps.push("hl.dsp.focus({ " + root.windowTarget(t) + " })")
+    steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
+    root.dispatchKeepCursor(steps, "", tile ? "" : root.clearCommand([t]))
+  }
+  function closeWindow(t) {
+    if (t) root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.window.close({ " + root.windowTarget(t) + " })"))
+  }
+
+  function activateApp(item, tile) {
+    if (!item || item.separator) return
+    var wins = item.windows || []
+    if (wins.length === 0) {
+      var launch = root.launchCommandFor(item)
+      if (launch) root.run(tile ? root.tileNextCommand() + "; " + launch : launch)
+      return
+    }
+
+    var mon = Hyprland.focusedMonitor
+    var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
+    var visible = wins.filter(function(t) { return !root.isMinimized(t) })
+    var hidden = wins.filter(function(t) { return root.isMinimized(t) })
+    var focused = visible.some(function(t) { return t.activated })
+    var steps = []
+    var head = ""
+    var park = ""
+
+    if (focused) {
+      // Slide them out to the left and hide them (minimize.sh).
+      head = ""
+      park = "bash " + Util.shellQuote(root.minimizeScript) + visible.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("")
+    } else if (visible.length > 0) {
+      var t = visible[0]
+      if (!tile) head = root.clearCommand(visible)
+      steps.push("hl.dsp.focus({ " + root.windowTarget(t) + " })")
+      steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
+    } else {
+      if (!tile) head = root.clearCommand([])
+      hidden.forEach(function(t) {
+        steps.push("hl.dsp.window.move({ workspace = \"" + here + "\", follow = false, " + root.windowTarget(t) + " })")
+        // Parked off the left edge while minimized: tiling it again slides it in from there.
+        steps.push("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })")
+      })
+      var last = hidden[hidden.length - 1]
+      steps.push("hl.dsp.focus({ " + root.windowTarget(last) + " })")
+    }
+    root.dispatchKeepCursor(steps, park, head)
+  }
+
+
+  // ---- integrated Omarchy menu (the Super+Space menu) ------------------------
+  // Reads the same JSONC menu files as Omarchy's menu and reuses its model
+  // code, so menu extensions and Omarchy updates show up here too.
+  property bool searching: false
+  property string searchMonitor: ""
+  property string query: ""
+  property string activeMenu: "root"
+  property int selectedIndex: 0
+  property var defaultMenuItems: []
+  property var userMenuItems: []
+  property bool defaultMenuSettled: false
+  property bool userMenuSettled: false
+  property var menuItems: ({})
+  property var menuOrder: []
+  property var whenResults: ({})
+  property var checkedResults: ({})
+  property var disabledResults: ({})
+
+  ShellIpc {
+    target: "jake.sidebar"
+    function search() { root.toggleSearch() }
+    function openSearch() { root.enterSearch() }
+    function closeSearch() { root.exitSearch() }
+    function quickSettings() { root.toggleQuickSettings() }
+    function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
+    function overview() { root.toggleOverview() }
+    function settings(section: string) { root.openSettings(section) }
+    function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
+    function searchFor(text: string) { root.enterSearch(); root.query = text }
+  }
+
+  function toggleSearch() { if (root.searching) root.exitSearch(); else root.enterSearch() }
+  function enterSearch(monitorName) {
+    var mon = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
+    root.query = ""
+    root.activeMenu = "root"
+    root.selectedIndex = 0
+    root.searchMonitor = mon
+    root.closeTrayMenu()
+    root.closeDockedPanel()
+    root.searching = true
+  }
+  function exitSearch(why) {
+    root.searching = false
+    root.query = ""
+    root.activeMenu = "root"
+    root.selectedIndex = 0
+  }
+
+  FileView {
+    path: root.omarchyPath + "/default/omarchy/omarchy-menu.jsonc"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { root.defaultMenuItems = MenuModel.keepMenuRows(root.defaultMenuItems, text(), true); root.defaultMenuSettled = true; root.rebuildMenu() }
+    onLoadFailed: { root.defaultMenuSettled = true; root.rebuildMenu() }
+  }
+  FileView {
+    path: Quickshell.env("HOME") + "/.config/omarchy/extensions/omarchy-menu.jsonc"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { root.userMenuItems = MenuModel.keepMenuRows(root.userMenuItems, text(), false); root.userMenuSettled = true; root.rebuildMenu() }
+    onLoadFailed: { root.userMenuItems = []; root.userMenuSettled = true; root.rebuildMenu() }
+  }
+  function rebuildMenu() {
+    var merged = MenuModel.mergeMenuSources(root.defaultMenuItems, root.userMenuItems, "Go")
+    root.menuItems = merged.items
+    root.menuOrder = merged.itemOrder
+    if (root.defaultMenuSettled && root.userMenuSettled) root.evaluateGuards()
+  }
+
+  // when / checked / disabled conditions, batched into one bash run.
+  function evaluateGuards() {
+    if (guardProc.running) { guardRerun.restart(); return }
+    var script = MenuModel.guardScript(root.menuItems)
+    if (!script) { root.whenResults = ({}); root.checkedResults = ({}); root.disabledResults = ({}); return }
+    guardProc.collected = ""
+    guardProc.command = ["bash", "-lc", script]
+    guardProc.running = true
+  }
+  Timer { id: guardRerun; interval: 200; onTriggered: root.evaluateGuards() }
+  // Conditions can change (installs, toggles), so re-check each time it opens.
+  onSearchingChanged: {
+    if (searching) qsOpen = false
+    if (searching && defaultMenuSettled && userMenuSettled) evaluateGuards()
+  }
+  Process {
+    id: guardProc
+    property string collected: ""
+    stdout: SplitParser { onRead: function(data) { guardProc.collected += data + "\n" } }
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode !== 0 || exitStatus !== 0) return
+      var w = ({}), c = ({}), d = ({})
+      var lines = guardProc.collected.split("\n")
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim()
+        var colon = line.lastIndexOf(":")
+        if (colon < 0) continue
+        var value = line.substring(colon + 1) === "1"
+        var rest = line.substring(0, colon)
+        var tagAt = rest.lastIndexOf(":")
+        if (tagAt < 0) continue
+        var id = rest.substring(0, tagAt), tag = rest.substring(tagAt + 1)
+        if (tag === "w") w[id] = value
+        else if (tag === "c") c[id] = value
+        else if (tag === "d") d[id] = value
+      }
+      root.whenResults = w; root.checkedResults = c; root.disabledResults = d
+    }
+  }
+
+  function visibleEntry(e) { return MenuModel.isVisible(root.menuItems, root.menuOrder, root.whenResults, e) }
+  function disabledEntry(e) { return MenuModel.isDisabled(root.disabledResults, e) }
+  function menuRow(e, detail, score) {
+    var r = MenuModel.displayRow(root.menuItems, root.menuOrder, root.checkedResults, root.disabledResults, e, detail, score, "")
+    return r
+  }
+  function launchableApps() {
+    var all = DesktopEntries.applications.values
+    var out = []
+    for (var i = 0; i < all.length; i++) if (!all[i].noDisplay) out.push(all[i])
+    return out
+  }
+  function appRow(entry, score, detail) {
+    return { kind: "app", itemId: "app:" + entry.id, label: entry.name, icon: "", iconFont: "", detail: detail || "",
+             target: "", action: "", provider: "", disabled: false, childCount: 0, score: score, entry: entry }
+  }
+
+  // The rows the panel shows while searching.
+  readonly property var searchRows: {
+    var revision = DesktopEntries.applications.values.length
+    var items = root.menuItems, order = root.menuOrder
+    var q = root.query.trim()
+    var active = items[root.activeMenu] ? root.activeMenu : "root"
+    var rows = []
+    if (q) {
+      var terms = q.toLowerCase().split(/\s+/)
+      var apps = root.launchableApps()
+      for (var a = 0; a < apps.length; a++) {
+        var e = apps[a]
+        var name = String(e.name || "").toLowerCase()
+        var hay = (name + " " + String(e.genericName || "") + " " + (e.keywords || []).join(" ") + " " + String(e.id || "")).toLowerCase()
+        if (!terms.every(function(t) { return hay.indexOf(t) >= 0 })) continue
+        var needle = q.toLowerCase()
+        var sc = name === needle || name.split(/\s+/).indexOf(needle) >= 0 ? 0 : name.indexOf(needle) === 0 ? 10 : name.indexOf(needle) >= 0 ? 30 : 40
+        rows.push(root.appRow(e, (sc - 5) * 1000, "Apps"))
+      }
+      for (var i = 0; i < order.length; i++) {
+        var m = items[order[i]]
+        if (!m || m.id === "root" || m.id === "apps") continue
+        if (!MenuModel.isDescendantOf(items, m.id, active)) continue
+        if (!MenuModel.matchesQuery(m, q, root.visibleEntry(m) && !root.disabledEntry(m))) continue
+        rows.push(root.menuRow(m, MenuModel.parentPathFor(items, m.id), MenuModel.searchScore(items, m, q)))
+      }
+      rows.sort(function(x, y) { return x.score - y.score || String(x.label).localeCompare(String(y.label)) })
+      rows = rows.slice(0, 80)
+    } else if (active === "apps") {
+      rows = root.launchableApps().map(function(e) { return root.appRow(e, 0, "") })
+      rows.sort(function(x, y) { return String(x.label).toLowerCase().localeCompare(String(y.label).toLowerCase()) })
+    } else {
+      for (var j = 0; j < order.length; j++) {
+        var c = items[order[j]]
+        if (!c || c.parent !== active || !root.visibleEntry(c)) continue
+        rows.push(root.menuRow(c, c.description, c.order))
+      }
+    }
+    if (active !== "root" && !q) {
+      var here = items[active]
+      rows.unshift({ kind: "back", itemId: "back", label: here ? (here.title || here.label) : "Back", icon: "", iconFont: "",
+                     detail: "", target: "", action: "", provider: "", disabled: false, childCount: 0, score: -1 })
+    }
+    return rows
+  }
+  onSearchRowsChanged: if (selectedIndex >= searchRows.length) selectedIndex = Math.max(0, searchRows.length - 1)
+  onQueryChanged: selectedIndex = 0
+
+  function menuBack() {
+    var here = root.menuItems[root.activeMenu]
+    root.activeMenu = here && here.parent ? here.parent : "root"
+    root.selectedIndex = 0
+  }
+  function openMenu(id) {
+    root.activeMenu = id
+    root.query = ""
+    root.selectedIndex = 0
+  }
+  function activateSearchRow(row) {
+    if (!row || row.disabled) return
+    if (row.kind === "back") { root.menuBack(); return }
+    if (row.kind === "app") {
+      // Same as the app list: minimize what's showing first, so it opens full.
+      var launch = root.launchCommand(row.entry)
+      if (launch) root.run(root.shiftHeld ? root.tileNextCommand() + "; " + launch : launch)
+      root.exitSearch()
+      return
+    }
+    if (row.provider === "apps") { root.openMenu("apps"); return }
+    if (row.kind === "menu" || row.kind === "link") {
+      var target = row.target || row.itemId
+      var t = root.menuItems[target]
+      // Rows built at runtime by the Omarchy menu (fonts, kernels, languages)
+      // still open in Omarchy's own menu.
+      if (t && t.provider && t.provider !== "apps") {
+        Quickshell.execDetached(["omarchy-menu", "summon", target])
+        root.exitSearch()
+        return
+      }
+      root.openMenu(target)
+      return
+    }
+    if (row.action) Quickshell.execDetached(["bash", "-lc", String(row.action)])
+    root.exitSearch()
+  }
+  function moveSelection(step) {
+    var rows = root.searchRows
+    if (rows.length === 0) return
+    var i = root.selectedIndex
+    for (var n = 0; n < rows.length; n++) {
+      i = (i + step + rows.length) % rows.length
+      if (!rows[i].disabled) { root.selectedIndex = i; return }
+    }
+  }
+
+  // ---- quick settings -------------------------------------------------------
+  property bool qsOpen: false
+  property string qsMonitor: ""
+  property var qsState: ({ wifi: false, bt: false, night: false, idle: false, dnd: false, profile: "", netType: "", netName: "" })
+  function toggleQuickSettings(monitorName) {
+    root.closeDockedPanel()
+    if (root.qsOpen) { root.qsOpen = false; return }
+    root.exitSearch()
+    root.closeTrayMenu()
+    root.qsMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
+    root.qsOpen = true
+    qsPoll.running = true
+    displayPoll.running = true
+  }
+  function closeQuickSettings() { root.qsOpen = false }
+
+  Process {
+    id: qsPoll
+    command: ["bash", "-c",
+      "echo wifi $(nmcli radio wifi 2>/dev/null); " +
+      "bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && echo bt on || echo bt off; " +
+      "echo night $(omarchy-toggle-nightlight --status 2>/dev/null | jq -r .enabled); " +
+      "echo idle $(omarchy-toggle-idle status 2>/dev/null | jq -r .enabled); " +
+      "echo dnd $(omarchy-shell notifications isDnd 2>/dev/null); " +
+      "echo profile $(powerprofilesctl get 2>/dev/null); " +
+      "nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null | awk -F: '$2==\"connected\" && $1!=\"loopback\" {print \"net\", $1, $3; exit}'"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var next = Object.assign({}, root.qsState)
+        String(text).split("\n").forEach(function(line) {
+          var f = line.trim().split(/\s+/)
+          if (f[0] === "wifi") next.wifi = f[1] === "enabled"
+          else if (f[0] === "bt") next.bt = f[1] === "on"
+          else if (f[0] === "night") next.night = f[1] === "true"
+          else if (f[0] === "idle") next.idle = f[1] === "true"
+          else if (f[0] === "dnd") next.dnd = f[1] === "on"
+          else if (f[0] === "profile") next.profile = f[1] || ""
+          else if (f[0] === "net") { next.netType = f[1] || ""; next.netName = f.slice(2).join(" ") }
+        })
+        root.qsState = next
+      }
+    }
+  }
+  Timer { id: qsRepoll; interval: 900; onTriggered: qsPoll.running = true }
+
+  function qsToggle(key) {
+    var s = Object.assign({}, root.qsState)
+    var cmd = ""
+    if (key === "wifi") cmd = "nmcli radio wifi " + (s.wifi ? "off" : "on")
+    else if (key === "bt") cmd = "omarchy-bluetooth-power " + (root.btAdapter && root.btAdapter.enabled ? "off" : "on")
+    else if (key === "night") cmd = "omarchy-toggle-nightlight"
+    else if (key === "idle") cmd = "omarchy-toggle-idle"
+    else if (key === "dnd") cmd = "omarchy-toggle-notification-silencing"
+    else if (key === "profile") {
+      var order = ["power-saver", "balanced", "performance"]
+      var next = order[(order.indexOf(s.profile) + 1) % order.length]
+      cmd = "powerprofilesctl set " + next
+      s.profile = next
+    }
+    if (key !== "profile") s[key] = !s[key]
+    root.qsState = s
+    if (cmd) Quickshell.execDetached(["bash", "-lc", cmd])
+    qsRepoll.restart()
+  }
+
+  function systemAction(cmd) {
+    root.closeQuickSettings()
+    Quickshell.execDetached(["bash", "-lc", cmd])
+  }
+
+  // Settings section (in the sidebar, above the gear)
+  property string qsSection: "sound"
+  function toggleSection(id) { root.qsSection = root.qsSection === id ? "" : id }
+  readonly property var btAdapter: Bluetooth.defaultAdapter
+  readonly property var btDevices: {
+    var all = Bluetooth.devices ? Bluetooth.devices.values : []
+    return all.filter(function(d) { return d.paired || d.bonded || d.trusted || d.connected })
+              .sort(function(a, b) { return (b.connected ? 1 : 0) - (a.connected ? 1 : 0) || String(a.name).localeCompare(String(b.name)) })
+  }
+  function btToggleDevice(d) {
+    if (!d || !d.address) return
+    Quickshell.execDetached(["omarchy-bluetooth-device", d.connected ? "disconnect" : "connect", d.address])
+  }
+  readonly property var source: Pipewire.defaultAudioSource
+  PwObjectTracker { objects: root.source ? [root.source] : [] }
+  readonly property var sinkNodes: {
+    var all = Pipewire.nodes ? Pipewire.nodes.values : []
+    return all.filter(function(n) { return n.isSink && !n.isStream && n.audio })
+  }
+  PwObjectTracker { objects: root.sinkNodes }
+  function nodeName(n) { return n ? String(n.nickname || n.description || n.name || "") : "" }
+  function setSink(n) {
+    if (!n) return
+    Pipewire.preferredDefaultAudioSink = n
+    if (n.id !== undefined && n.name) Quickshell.execDetached(["omarchy-audio-output-set-default", String(n.id), String(n.name)])
+  }
+  function setProfile(p) {
+    var s = Object.assign({}, root.qsState); s.profile = p; root.qsState = s
+    Quickshell.execDetached(["powerprofilesctl", "set", p])
+    qsRepoll.restart()
+  }
+  function profileLabel(p) { return p === "power-saver" ? "Saver" : p === "performance" ? "Performance" : p === "balanced" ? "Balanced" : "" }
+
+  // Tray menus
+  property var trayMenuItem: null
+  property var trayMenuSub: null
+  property string trayMenuMonitor: ""
+  function openTrayMenu(item, monitorName) {
+    root.closeDockedPanel()
+    root.qsOpen = false
+    root.exitSearch()
+    root.trayMenuSub = null
+    root.trayMenuMonitor = monitorName
+    root.trayMenuItem = item
+  }
+  function closeTrayMenu() { root.trayMenuSub = null; root.trayMenuItem = null }
+
+  // ---- settings pages (detail views inside the settings area) --------------
+  property string qsPage: ""
+  onQsOpenChanged: if (!qsOpen) { qsPage = ""; pwSsid = "" }
+  onQsPageChanged: {
+    pwSsid = ""
+    if (root.wifiDevice) root.wifiDevice.scannerEnabled = qsPage === "network"
+    if (root.btAdapter) root.btAdapter.discovering = qsPage === "bluetooth"
+    if (qsPage === "network") dnsProc.running = true
+    if (qsPage === "display") displayPoll.running = true
+  }
+  // Open settings at a section (keybinds); the same section again closes it.
+  function openSettings(section) {
+    if (root.qsOpen && root.qsPage === "" && (!section || root.qsSection === section)) { root.qsOpen = false; return }
+    root.exitSearch()
+    root.closeTrayMenu()
+    root.qsMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    if (section) root.qsSection = section
+    root.qsPage = ""
+    root.qsOpen = true
+    qsPoll.running = true
+  }
+
+  // Wi-Fi
+  readonly property var wifiDevice: {
+    var devs = Networking.devices ? Networking.devices.values : []
+    for (var i = 0; i < devs.length; i++) if (devs[i].type === DeviceType.Wifi) return devs[i]
+    return null
+  }
+  function signalOf(n) { var s = Number(n.signalStrength || 0); return s > 1 ? s / 100 : s }
+  readonly property var wifiNetworks: {
+    var nets = root.wifiDevice && root.wifiDevice.networks ? root.wifiDevice.networks.values : []
+    return nets.filter(function(n) { return n && n.name })
+               .sort(function(a, b) { return (b.connected ? 1 : 0) - (a.connected ? 1 : 0) || (b.known ? 1 : 0) - (a.known ? 1 : 0) || root.signalOf(b) - root.signalOf(a) })
+  }
+  function secured(n) { return n.security !== WifiSecurityType.Open && n.security !== WifiSecurityType.Owe }
+  function bars(n) { var s = root.signalOf(n); return s > 0.75 ? "▂▄▆█" : s > 0.5 ? "▂▄▆ " : s > 0.25 ? "▂▄  " : "▂   " }
+  property string pwSsid: ""
+  function wifiClick(n) {
+    if (!n) return
+    if (n.connected) { n.disconnect(); return }
+    if (root.secured(n) && !n.known) { root.pwSsid = n.name; return }
+    n.connect()
+  }
+  function wifiConnectWithPassword(pass) {
+    var nets = root.wifiNetworks
+    for (var i = 0; i < nets.length; i++) if (nets[i].name === root.pwSsid) { nets[i].connectWithPsk(pass); break }
+    root.pwSsid = ""
+  }
+
+  // DNS
+  property string dnsProvider: ""
+  Process {
+    id: dnsProc
+    command: ["omarchy-dns"]
+    stdout: StdioCollector { onStreamFinished: root.dnsProvider = String(text).trim().split("\n")[0] }
+  }
+  function setDns(p) {
+    root.dnsProvider = p
+    Quickshell.execDetached(["bash", "-lc", "omarchy-dns " + Util.shellQuote(p)])
+  }
+
+  // Bluetooth pairing
+  readonly property var btNearby: {
+    var all = Bluetooth.devices ? Bluetooth.devices.values : []
+    var macLike = /^([0-9A-F]{2}[-:]){5}[0-9A-F]{2}$/i
+    return all.filter(function(d) {
+      var name = String(d.name || d.deviceName || "")
+      return !(d.paired || d.bonded || d.trusted || d.connected) && name && !macLike.test(name)
+    })
+  }
+  function btPair(d) { if (d && d.address) Quickshell.execDetached(["omarchy-bluetooth-device", "pair", d.address]) }
+  function btForget(d) { if (d && d.address) Quickshell.execDetached(["omarchy-bluetooth-device", "forget", d.address]) }
+
+  // Audio inputs and app volumes
+  readonly property var sourceNodes: {
+    var all = Pipewire.nodes ? Pipewire.nodes.values : []
+    return all.filter(function(n) { return !n.isSink && !n.isStream && n.audio && String(n.name).indexOf(".monitor") < 0 })
+  }
+  readonly property var streamNodes: {
+    var all = Pipewire.nodes ? Pipewire.nodes.values : []
+    return all.filter(function(n) { return n.isStream && n.audio && n.properties && n.properties["media.class"] === "Stream/Output/Audio" })
+  }
+  PwObjectTracker { objects: root.sourceNodes.concat(root.streamNodes) }
+  function setSource(n) {
+    if (!n) return
+    if (n.audio) Pipewire.preferredDefaultAudioSource = n
+    if (n.id !== undefined && n.name) Quickshell.execDetached(["omarchy-audio-input-set-default", String(n.id), String(n.name)])
+  }
+  function streamName(n) {
+    var p = n.properties || {}
+    return String(p["application.name"] || p["media.name"] || n.description || n.name || "App")
+  }
+
+  // Display
+  property int brightness: -1
+  property string displayScale: ""
+  property int textPx: 12
+  property string modeSize: ""
+  property real refreshRate: 0
+  property var refreshRates: []
+  property var resolutions: []
+  property string modeRes: ""
+  function resLabel(res) {
+    var p = String(res).split("x"), w = Number(p[0]), h = Number(p[1])
+    if (w * 9 === h * 16) return h === 2160 ? "4K" : h === 2880 ? "5K" : h + "p"
+    return w + "×" + h
+  }
+  // The native (largest) resolution plus the other 16:9 ones, up to four.
+  readonly property var resolutionOptions: {
+    var out = []
+    for (var i = 0; i < root.resolutions.length && out.length < 4; i++) {
+      var p = root.resolutions[i].split("x")
+      if (i === 0 || Number(p[0]) * 9 === Number(p[1]) * 16 || root.resolutions[i] === root.modeRes) out.push([root.resolutions[i], root.resLabel(root.resolutions[i])])
+    }
+    return out
+  }
+  function setResolution(res) {
+    root.modeRes = res
+    Quickshell.execDetached(["bash", root.refreshScript, "set", res, "best"])
+    displayRepoll.restart()
+  }
+  // A dual-mode monitor switching modes reconnects with a new mode list:
+  // re-read it whenever Hyprland reports monitors coming or going.
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      var n = String(event.name)
+      if (n.indexOf("monitoradded") === 0 || n.indexOf("monitorremoved") === 0 || n === "configreloaded") displayRepoll.restart()
+    }
+  }
+  readonly property string refreshScript: Qt.resolvedUrl("refresh.sh").toString().replace("file://", "")
+  // Whole-number rates, plus the current one if it's fractional (119.88, 59.94).
+  readonly property var refreshOptions: {
+    var cur = root.refreshRate
+    return root.refreshRates.filter(function(r) {
+      var n = Number(r)
+      return Math.abs(n - Math.round(n)) < 0.001 || Math.abs(n - cur) < 0.01
+    }).map(function(r) { var n = Number(r); return [r, (Math.abs(n - Math.round(n)) < 0.001 ? Math.round(n) : n.toFixed(2)) + " Hz"] })
+  }
+  readonly property string refreshCurrent: {
+    for (var i = 0; i < root.refreshRates.length; i++) if (Math.abs(Number(root.refreshRates[i]) - root.refreshRate) < 0.01) return root.refreshRates[i]
+    return ""
+  }
+  Timer { id: displayRepoll; interval: 1200; onTriggered: displayPoll.running = true }
+  function setRefresh(r) {
+    root.refreshRate = Number(r)
+    Quickshell.execDetached(["bash", root.refreshScript, "set", root.modeRes, String(r)])
+    displayRepoll.restart()
+  }
+  Process {
+    id: displayPoll
+    command: ["bash", "-c", "omarchy-monitor-state 2>/dev/null | head -1; echo scale $(omarchy-hyprland-monitor-scaling 2>/dev/null); omarchy-display-text-size 2>/dev/null | awk '/^Text size/ {print \"text\", $3}'; bash \"$1\" status", "sh", root.refreshScript]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var lines = String(text).split("\n")
+        var b = parseInt(lines[0]); root.brightness = isNaN(b) ? -1 : b
+        lines.forEach(function(l) {
+          var f = l.trim().split(/\s+/)
+          if (f[0] === "scale") root.displayScale = f[1] || ""
+          else if (f[0] === "text") root.textPx = parseInt(f[1]) || 12
+          else if (f[0] === "mode") { root.modeSize = f[1] + "×" + f[2]; root.modeRes = f[1] + "x" + f[2]; root.refreshRate = Number(f[3]) || 0 }
+          else if (f[0] === "rates") root.refreshRates = f.slice(1).filter(function(r) { return r })
+          else if (f[0] === "resolutions") root.resolutions = f.slice(1).filter(function(r) { return r })
+        })
+        root.rememberOrRestoreScale()
+      }
+    }
+  }
+  Timer {
+    id: brightnessApply
+    interval: 150
+    onTriggered: {
+      var mon = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+      Quickshell.execDetached(["omarchy-brightness-display", "--no-osd", "--monitor", mon, root.brightness + "%"])
+    }
+  }
+  function setBrightness(v) { root.brightness = Math.round(v * 100); brightnessApply.restart() }
+  function setScale(sc) {
+    root.displayScale = sc
+    root.saveScaleFor(root.modeRes, sc)
+    Quickshell.execDetached(["bash", "-lc", "omarchy-hyprland-monitor-scaling " + sc])
+  }
+
+  // ---- scale remembered per monitor + resolution ----------------------------
+  // Kept in ~/.config/omarchy/sidebar-display.json: { lastMode: {mon: res}, scales: {"mon:res": scale} }.
+  // When a monitor comes back at a different resolution (a dual-mode switch),
+  // the scale last used at that resolution is put back.
+  readonly property string displayStatePath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-display.json"
+  property var displayState: ({ lastMode: {}, scales: {} })
+  property bool displayStateLoaded: false
+  FileView {
+    path: root.displayStatePath
+    printErrors: false
+    onLoaded: {
+      try { var v = JSON.parse(text()); if (v && typeof v === "object") root.displayState = { lastMode: v.lastMode || {}, scales: v.scales || {} } } catch (e) {}
+      root.displayStateLoaded = true
+      displayPoll.running = true
+    }
+    onLoadFailed: { root.displayStateLoaded = true; displayPoll.running = true }
+  }
+  function writeDisplayState() {
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(root.displayState), root.displayStatePath])
+  }
+  function monName() { return Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "" }
+  function saveScaleFor(res, sc) {
+    if (!res || !sc) return
+    var st = { lastMode: Object.assign({}, root.displayState.lastMode), scales: Object.assign({}, root.displayState.scales) }
+    st.scales[root.monName() + ":" + res] = String(sc)
+    st.lastMode[root.monName()] = res
+    root.displayState = st
+    root.writeDisplayState()
+  }
+  function rememberOrRestoreScale() {
+    if (!root.displayStateLoaded || !root.modeRes || !root.displayScale) return
+    var mon = root.monName()
+    var key = mon + ":" + root.modeRes
+    var st = { lastMode: Object.assign({}, root.displayState.lastMode), scales: Object.assign({}, root.displayState.scales) }
+    var saved = st.scales[key]
+    var changedMode = st.lastMode[mon] !== undefined && st.lastMode[mon] !== root.modeRes
+    st.lastMode[mon] = root.modeRes
+    if (changedMode && saved && Number(saved) !== Number(root.displayScale)) {
+      // New mode: put its remembered scale back.
+      root.displayScale = saved
+      Quickshell.execDetached(["bash", "-lc", "omarchy-hyprland-monitor-scaling " + saved])
+    } else {
+      // Same mode: whatever scale is in use now is the one to remember for it.
+      st.scales[key] = String(root.displayScale)
+    }
+    root.displayState = st
+    root.writeDisplayState()
+  }
+  function setTextPx(px) {
+    px = Math.max(9, Math.min(20, px)); root.textPx = px
+    Quickshell.execDetached(["omarchy-display-text-size", String(px)])
+  }
+
+  // ---- plugin panels docked inside the sidebar ------------------------------
+  // A widget's panel (Omarchy's shared KeyboardPanel, which plugins use) normally
+  // floats beside the bar. While one is open, its content is moved into the
+  // sidebar above the bottom row and its own window is hidden; closing moves the
+  // content back. Works for any plugin built on that panel, no per-plugin code.
+  property var dockedPanel: null
+  property var dockedItems: []
+  property var dockedParents: []
+  property string dockedName: ""
+  property string dockedId: ""
+  property string dockMonitor: ""
+  property var dockBodies: ({})
+  function registerDockBody(mon, item) { var n = Object.assign({}, root.dockBodies); n[mon] = item; root.dockBodies = n }
+
+  function isKeyboardPanel(o) {
+    return !!o && o.loadedContent !== undefined && o.contentRequested !== undefined && o.anchorItem !== undefined && o.contentItem !== undefined
+  }
+  function findPanels(o, out, depth, seen) {
+    if (!o || depth > 14 || seen.indexOf(o) !== -1) return
+    seen.push(o)
+    if (root.isKeyboardPanel(o)) { out.push(o); return }
+    var kids = []
+    try { if (o.data) for (var i = 0; i < o.data.length; i++) kids.push(o.data[i]) } catch (e) {}
+    try { if (o.children) for (var j = 0; j < o.children.length; j++) kids.push(o.children[j]) } catch (e) {}
+    try { if (o.item && typeof o.item === "object") kids.push(o.item) } catch (e) {}
+    for (var k = 0; k < kids.length; k++) root.findPanels(kids[k], out, depth + 1, seen)
+  }
+  function hostedName(host) {
+    var meta = host && host.registryEntry && host.registryEntry.metadata ? host.registryEntry.metadata : {}
+    return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || meta.name || (host ? host.moduleName : "") || "")
+  }
+  // Called when a hosted widget asks to show its panel.
+  function dockOpenPanel() {
+    for (var i = 0; i < root.hostedItems.length; i++) {
+      var host = root.hostedItems[i]
+      var panels = []
+      root.findPanels(host.item, panels, 0, [])
+      for (var p = 0; p < panels.length; p++) {
+        if (panels[p].open) { root.dockedId = host.moduleName; root.dockPanel(panels[p], root.hostedName(host)); return }
+      }
+    }
+  }
+  function dockPanel(panel, name) {
+    if (root.dockedPanel === panel) return
+    root.undockPanel()
+    root.qsOpen = false
+    root.exitSearch()
+    root.closeTrayMenu()
+    var mon = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    var body = root.dockBodies[mon] || root.dockBodies[Object.keys(root.dockBodies)[0]]
+    if (!body) return
+    panel.visible = false
+    var kids = []
+    for (var i = 0; i < panel.contentItem.length; i++) kids.push(panel.contentItem[i])
+    root.dockedParents = kids.map(function(k) { return k.parent })
+    kids.forEach(function(k) { k.parent = body; if (k.width < 1 || !k.anchors.fill) k.width = Qt.binding(function() { return body.width }) })
+    root.dockedItems = kids
+    root.dockedName = name || ""
+    root.dockMonitor = mon
+    root.dockedPanel = panel
+  }
+  function undockPanel() {
+    if (!root.dockedPanel) return
+    var kids = root.dockedItems, parents = root.dockedParents
+    for (var i = 0; i < kids.length; i++) if (kids[i] && parents[i]) kids[i].parent = parents[i]
+    root.dockedItems = []
+    root.dockedParents = []
+    root.dockedPanel = null
+  }
+  function closeDockedPanel() {
+    var owner = root.activePopout
+    if (owner && typeof owner.close === "function") owner.close()
+    else if (root.dockedPanel) root.dockedPanel.open = false
+    root.undockPanel()
+  }
+  readonly property real dockHeight: {
+    // The panel's own idea of its height is the most reliable: content built up
+    // front just fills the panel's frame and measures 0 on its own.
+    var h = root.dockedPanel ? Math.max(0, root.dockedPanel.contentHeight) : 0
+    var kids = root.dockedItems
+    for (var i = 0; i < kids.length; i++) {
+      var k = kids[i]
+      if (!k) continue
+      var kh = (k.item !== undefined && k.sourceComponent !== undefined) ? (k.item ? k.item.implicitHeight : 0) : (k.implicitHeight || k.height)
+      h = Math.max(h, kh)
+    }
+    return h
+  }
+  Timer { id: dockRetry; interval: 120; onTriggered: if (!root.dockedPanel) root.dockOpenPanel() }
+  Connections {
+    target: root.dockedPanel
+    function onOpenChanged() { if (root.dockedPanel && !root.dockedPanel.open) root.undockPanel() }
+  }
+
+  // ---- sidebar settings (edited in the "Edit sidebar" panel) -----------------
+  // Kept in ~/.config/omarchy/sidebar-settings.json; anything not set there
+  // uses these defaults, which are how the sidebar looks out of the box.
+  readonly property var settingsDefaults: ({
+    clock: { show: true, h24: true, date: true, seconds: false },
+    system: { show: true, cpu: true, mem: true, disk: true, network: true, refresh: 2 },
+    workspaces: { show: true, count: 5 },
+    search: { show: true, clip: true },
+    apps: { running: true, group: true, compact: false, indicator: "bar" },
+    bottom: { plugins: true, tray: true }
+  })
+  readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
+  property var userSettings: ({})
+  FileView {
+    path: root.settingsPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object") root.userSettings = v } catch (e) {} }
+  }
+  function setting(section, key) {
+    var u = root.userSettings[section]
+    if (u && u[key] !== undefined) return u[key]
+    var d = root.settingsDefaults[section]
+    return d ? d[key] : undefined
+  }
+  // While editing, changes only preview (Save writes them, Cancel drops them).
+  function saveSettings(next) {
+    root.userSettings = next
+    if (!root.editing) root.writeSettings()
+  }
+  function writeSettings() {
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(root.userSettings, null, 2), root.settingsPath])
+  }
+  function setSetting(section, key, value) {
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    if (section === "") next[key] = value
+    else { next[section] = next[section] || {}; next[section][key] = value }
+    root.saveSettings(next)
+  }
+  function resetSection(section) {
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    delete next[section]
+    root.saveSettings(next)
+  }
+  // A section hidden in the settings still shows (faded) while editing, so it can be turned back on.
+  function sectionShown(section) { return root.setting(section, "show") !== false }
+  function sectionOpacity(section) { return root.setting(section, "show") === false ? 0.35 : 1 }
+  readonly property int rowH: root.setting("apps", "compact") ? 30 : 36
+  // Order of the sections down the sidebar (dragged in edit mode).
+  readonly property var defaultOrder: ["clock", "system", "workspaces", "search", "apps", "bottom"]
+  readonly property var sectionOrder: {
+    var saved = Array.isArray(root.userSettings.order) ? root.userSettings.order : []
+    var known = root.defaultOrder.concat(root.extraSections.map(function(e) { return e.id }))
+    var out = saved.filter(function(id, i) { return known.indexOf(id) !== -1 && saved.indexOf(id) === i })
+    root.defaultOrder.forEach(function(id) { if (out.indexOf(id) === -1) out.push(id) })
+    root.extraSections.forEach(function(e) {
+      if (out.indexOf(e.id) === -1) { var at = out.indexOf("bottom"); out.splice(at < 0 ? out.length : at, 0, e.id) }
+    })
+    return out
+  }
+
+  // ---- edit mode ---------------------------------------------------------------
+  property bool editing: false
+  property string editMonitor: ""
+  property string editSection: "apps"
+  readonly property var editSections: [
+    { id: "clock", label: "CLOCK" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
+    { id: "search", label: "SEARCH" }, { id: "apps", label: "APP LIST" }, { id: "bottom", label: "BOTTOM BAR" }
+  ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
+  function startEditing(monitorName) {
+    root.closeQuickSettings()
+    root.exitSearch()
+    root.closeTrayMenu()
+    root.closeDockedPanel()
+    root.editMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
+    root.editSnapshot = JSON.parse(JSON.stringify(root.userSettings))
+    root.editing = true
+  }
+  property var editSnapshot: ({})
+  function saveEditing() { root.editing = false; root.writeSettings() }
+  function cancelEditing() { root.editing = false; root.userSettings = root.editSnapshot }
+  function stopEditing() { root.cancelEditing() }
+
+  // ---- widget sections: a widget's panel, kept open as a section of its own ----
+  // Saved as settings.extras = [{ id: "w:<widget id>" }]; each also has a place
+  // in the section order and its own settings ({ show, title }).
+  readonly property var extraSections: (Array.isArray(root.userSettings.extras) ? root.userSettings.extras : [])
+    .filter(function(e) { return e && typeof e.id === "string" && e.id.indexOf("w:") === 0 })
+  function widgetOf(secId) { return String(secId).indexOf("w:") === 0 ? String(secId).slice(2) : "" }
+  function widgetName(wid) {
+    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+    var meta = w && w[wid] ? (w[wid].metadata || {}) : {}
+    return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || meta.name || wid)
+  }
+  // Widgets whose panel can become a section (bar-only widgets have none).
+  readonly property var noPanelWidgets: ["omarchy.workspaces", "omarchy.tray", "omarchy.spacer", "omarchy.indicators", "omarchy.menu",
+                                         "omarchy.keyboard-layout", "omarchy.system-update", "omarchy.active-window", "omarchy.microphone"]
+  readonly property var embeddableWidgets: {
+    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+    if (!w) return []
+    var added = root.extraSections.map(function(e) { return root.widgetOf(e.id) })
+    return Object.keys(w).filter(function(id) { return w[id] && w[id].component && root.noPanelWidgets.indexOf(id) === -1 && added.indexOf(id) === -1 })
+      .sort(function(a, b) { return root.widgetName(a).localeCompare(root.widgetName(b)) })
+  }
+  function addWidgetSection(wid) {
+    var id = "w:" + wid
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id }).concat([{ id: id }])
+    var order = root.sectionOrder.filter(function(x) { return x !== id })
+    var at = order.indexOf("bottom")
+    order.splice(at < 0 ? order.length : at, 0, id)
+    next.order = order
+    root.saveSettings(next)
+    root.editSection = id
+    root.addOpen = false
+  }
+  function removeWidgetSection(id) {
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id })
+    if (Array.isArray(next.order)) next.order = next.order.filter(function(x) { return x !== id })
+    delete next[id]
+    root.saveSettings(next)
+    if (root.editSection === id) root.editSection = "apps"
+  }
+  property bool addOpen: false
+  onEditingChanged: if (!editing) addOpen = false
+  function removeSection(id) {
+    if (!id || id === "bottom") return
+    if (String(id).indexOf("w:") === 0) root.removeWidgetSection(id)
+    else root.setSetting(id, "show", false)
+    if (root.editSection === id) root.editSection = "apps"
+  }
+
+  // The bar handed to widgets living in a section: same as the bottom row's,
+  // but their panel never takes part in the one-popup-at-a-time juggling.
+  QtObject {
+    id: embedBar
+    readonly property var shell: root.shell
+    readonly property color foreground: root.foreground
+    readonly property color barForeground: root.barForeground
+    readonly property color background: root.background
+    readonly property color urgent: root.urgent
+    readonly property string fontFamily: root.fontFamily
+    readonly property string position: "left"
+    readonly property bool vertical: true
+    readonly property int barSize: Style.bar.sizeVertical
+    readonly property int sizeHorizontal: Style.bar.sizeHorizontal
+    readonly property int iconSlot: Style.bar.iconSlot
+    readonly property int statusSlot: Style.bar.statusSlot
+    readonly property int iconSize: Style.bar.iconSize
+    readonly property int iconCanvas: Style.bar.iconCanvas
+    readonly property int iconFont: Style.bar.iconFont
+    readonly property bool transparent: false
+    readonly property bool barHidden: false
+    readonly property bool foregroundAnimationEnabled: true
+    readonly property bool centerSectionRevealHeld: false
+    readonly property bool centerHoverRevealSuppressed: false
+    readonly property bool traySectionDragActive: false
+    readonly property bool traySectionPopoutOpen: false
+    readonly property bool microphoneMuted: false
+    readonly property bool microphoneLive: false
+    readonly property bool microphoneInUse: false
+    readonly property int pendingUpdates: 0
+    readonly property var layoutConfig: widgetBar.layoutConfig
+    readonly property var activePopout: null
+    readonly property var clickTargets: []
+    function barSizeFor(screenName) { return root.sidebarWidth }
+    function run(command) { root.run(command) }
+    function requestPopout(owner) {}
+    function releasePopout(owner) {}
+    function notePopoutCard(card) {}
+    function popoutCardFor(owner) { return null }
+    function switchPanelFrom(owner, direction) { return false }
+    function moduleWidgets(id) { return [] }
+    function registerClickTarget(target) {}
+    function unregisterClickTarget(target) {}
+    function targetBelongsToWindow(target, window) { return false }
+    function setCenterHoverRevealSuppressed(value) {}
+    function showTooltip(target, text) {}
+    function hideTooltip(target) {}
+  }
+
+  // The "Add section" picker: searchable, grouped (hidden sections / Omarchy / plugins).
+  property string addQuery: ""
+  property int addIndex: 0
+  onAddOpenChanged: { addQuery = ""; addIndex = 0 }
+  onAddQueryChanged: addIndex = 0
+  readonly property var addRows: {
+    var q = root.addQuery.toLowerCase().trim()
+    var terms = q ? q.split(/\s+/) : []
+    function match(text) { text = String(text).toLowerCase(); return terms.every(function(t) { return text.indexOf(t) >= 0 }) }
+    var hidden = root.editSections.filter(function(e) { return root.setting(e.id, "show") === false })
+      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: "Removed — add it back", cat: "Section" } })
+    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : {}
+    var omarchy = [], plugins = []
+    root.embeddableWidgets.forEach(function(id) {
+      var meta = w[id] && w[id].metadata ? w[id].metadata : {}
+      var row = { kind: "widget", id: id, name: root.widgetName(id), desc: String(meta.description || (meta.barWidget && meta.barWidget.description) || ""),
+                  cat: String(meta.category || (meta.barWidget && meta.barWidget.category) || "") }
+      ;(meta.firstParty ? omarchy : plugins).push(row)
+    })
+    var out = []
+    function group(title, rows) {
+      rows = rows.filter(function(r) { return match(r.name + " " + r.desc + " " + r.cat + " " + r.id) })
+      if (rows.length === 0) return
+      out.push({ kind: "header", name: title + " · " + rows.length })
+      rows.forEach(function(r) { out.push(r) })
+    }
+    group("REMOVED SECTIONS", hidden)
+    group("OMARCHY", omarchy)
+    group("PLUGINS", plugins)
+    return out
+  }
+  readonly property var addPickable: root.addRows.filter(function(r) { return r.kind !== "header" })
+  function addPick(row) {
+    if (!row) return
+    if (row.kind === "hidden") { root.setSetting(row.id, "show", true); root.editSection = row.id; root.addOpen = false }
+    else if (row.kind === "widget") root.addWidgetSection(row.id)
+  }
+
+  // Default output volume
+  readonly property var sink: Pipewire.defaultAudioSink
+  PwObjectTracker { objects: root.sink ? [root.sink] : [] }
+
+  // ---- shared tooltip -----------------------------------------------------
+  QtObject {
+    id: tooltip
+    property var target: null
+    property string text: ""
+    function show(t, s) { target = t; text = String(s || "") }
+    function hide(t) { if (!t || t === target) { target = null; text = "" } }
+  }
+
+  // ---- one sidebar per screen --------------------------------------------
+  Variants {
+    model: Quickshell.screens
+
+    PanelWindow {
+      id: win
+      required property var modelData
+      screen: modelData
+      readonly property var monitor: Hyprland.monitorFor(modelData)
+      readonly property string monitorName: monitor ? monitor.name : ""
+
+      WlrLayershell.namespace: "omarchy-bar"
+      WlrLayershell.layer: WlrLayer.Top
+      WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
+        ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+      anchors { top: true; bottom: true; left: true }
+      implicitWidth: root.sidebarWidth
+      exclusiveZone: root.sidebarWidth
+      color: root.background
+
+      // Tooltip for hosted widgets and tray icons.
+      PopupWindow {
+        visible: tooltip.target !== null && tooltip.text !== "" && tooltip.target.QsWindow && tooltip.target.QsWindow.window === win
+        anchor.item: visible ? tooltip.target : null
+        anchor.edges: Edges.Top
+        anchor.gravity: Edges.Top
+        implicitWidth: tipText.implicitWidth + 16
+        implicitHeight: tipText.implicitHeight + 10
+        color: "transparent"
+        Rectangle {
+          anchors.fill: parent
+          radius: 4
+          color: root.background
+          border.color: root.faint
+          Text {
+            id: tipText
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: tooltip.text
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 11
+          }
+        }
+      }
+
+      // -- drag an app out of the sidebar ------------------------------------------
+      property var dragItem: null
+      property real dragX: 0          // pointer, in this screen's coordinates
+      property real dragY: 0
+      property var dragRects: []      // tiled windows on the active workspace
+      readonly property var dropRect: {
+        var r = win.dragRects, x = win.dragX + win.screen.x, y = win.dragY + win.screen.y
+        for (var i = 0; i < r.length; i++)
+          if (x >= r[i].x && x < r[i].x + r[i].w && y >= r[i].y && y < r[i].y + r[i].h) {
+            var left = x < r[i].x + r[i].w / 2
+            return { x: (left ? r[i].x : r[i].x + r[i].w / 2) - win.screen.x, y: r[i].y - win.screen.y, w: r[i].w / 2, h: r[i].h }
+          }
+        return null
+      }
+      readonly property bool dragOverSidebar: win.dragX < root.sidebarWidth
+      function beginDrag(item) {
+        win.dragItem = item
+        win.dragRects = []
+        dragRectsProc.running = true
+      }
+      // Where in the app list a drag over the sidebar would land: { index, y }
+      // (index counts rows; y is the insertion line in the list's own coordinates).
+      property var listDrop: null
+      function listDropAt(x, y) {
+        if (x >= root.sidebarWidth || !appList.visible) return null
+        var p = appList.mapFromItem(win.contentItem, x, y)
+        if (p.y < -12 || p.y > appList.height + 12) return null
+        var rows = appList.model || []
+        var cy = p.y + appList.contentY
+        var index = rows.length, lineY = appList.contentHeight
+        for (var i = 0; i < rows.length; i++) {
+          var it = appList.itemAtIndex(i)
+          if (!it) continue
+          if (rows[i].separator) { if (cy < it.y + it.height) { index = i; lineY = it.y; break } else continue }
+          if (cy < it.y + Math.min(it.height, 36) / 2) { index = i; lineY = it.y - 1; break }
+        }
+        // rows before the separator are the pinned ones; the separator itself counts as "end of pinned"
+        var pinnedCount = rows.filter(function(r) { return r.pinned }).length
+        var listIndex = index <= pinnedCount ? index : pinnedCount + 1 + (index - pinnedCount)
+        return { index: listIndex, y: lineY }
+      }
+      // The app row (and window row, if expanded) under a point in the list.
+      function hoveredAt(x, y) {
+        if (x >= root.sidebarWidth || !appList.visible) return null
+        var p = appList.mapFromItem(win.contentItem, x, y)
+        if (p.y < 0 || p.y > appList.height) return null
+        var cy = p.y + appList.contentY
+        var i = appList.indexAt(20, cy)
+        var it = i >= 0 ? appList.itemAtIndex(i) : null
+        var row = i >= 0 ? (appList.model || [])[i] : null
+        if (!row || !it || row.separator) return null
+        var local = cy - it.y
+        if (local < 36) return { row: row, window: null, index: i, itemY: it.y }
+        var k = Math.floor((local - 38) / 30)
+        var wins = row.windows || []
+        if (!it.expanded || k < 0 || k >= wins.length) return { row: row, window: null, index: i, itemY: it.y }
+        return { row: row, window: wins[k], sub: k, index: i, itemY: it.y, subY: it.y + 38 + k * 30 }
+      }
+      // Spring-loading: hold a drag over another app (or one of its windows) to open it.
+      property string springKey: ""
+      property var springHit: null
+      property string springDone: ""
+      Timer {
+        id: springTimer
+        interval: 650
+        onTriggered: {
+          var h = win.springHit
+          if (!h || !win.dragItem) return
+          win.springDone = win.springKey
+          if (h.window) {
+            if (!(h.window.activated && !root.isMinimized(h.window))) root.activateWindow(h.window, false)
+          } else {
+            var front = (h.row.windows || []).some(function(t) { return t.activated && !root.isMinimized(t) })
+            if (!front) root.activateApp(h.row, false)
+          }
+        }
+      }
+      function trackSpring(x, y) {
+        var h = win.dragItem ? win.hoveredAt(x, y) : null
+        var key = ""
+        if (h) {
+          key = h.window ? "w:" + root.addrOf(h.window) : "a:" + h.row.key
+          // not the thing being dragged
+          if (win.dragItem.windowOnly ? (h.window && root.addrOf(h.window) === root.addrOf(win.dragItem.windows[0])) || (!h.window && h.row.key === win.dragItem.key)
+                                      : h.row.key === win.dragItem.key) key = ""
+        }
+        if (key !== win.springKey) {
+          win.springKey = key
+          win.springHit = key ? h : null
+          if (key && key !== win.springDone) springTimer.restart(); else springTimer.stop()
+        }
+      }
+      // A dragged window over its own app's window list: where it would go.
+      function windowDropAt(x, y) {
+        var item = win.dragItem
+        if (!item || !item.windowOnly) return null
+        var h = win.hoveredAt(x, y)
+        if (!h || h.row.key !== item.key || !h.window) return null
+        var p = appList.mapFromItem(win.contentItem, x, y)
+        var cy = p.y + appList.contentY
+        var after = cy > h.subY + 15
+        return { index: h.sub + (after ? 1 : 0), y: h.subY + (after ? 30 : 0) - 1, row: h.row }
+      }
+      function updateDrag(x, y) {
+        win.dragX = x; win.dragY = y
+        if (!win.dragItem) { win.listDrop = null; return }
+        win.listDrop = win.dragItem.windowOnly ? win.windowDropAt(x, y) : win.listDropAt(x, y)
+        win.trackSpring(x, y)
+      }
+      function endDrag(x, y) {
+        var item = win.dragItem
+        var target = item && item.windowOnly ? win.windowDropAt(x, y) : win.listDropAt(x, y)
+        win.dragItem = null
+        win.listDrop = null
+        springTimer.stop(); win.springKey = ""; win.springHit = null; win.springDone = ""
+        if (!item) return
+        if (x >= root.sidebarWidth) root.dropApp(item, x + win.screen.x, y + win.screen.y)
+        else if (target && item.windowOnly) root.moveWindowTo(item.key, target.row.windows, item.windows[0], target.index)
+        else if (target) root.dropOnList(item, target.index)
+      }
+      Process {
+        id: dragRectsProc
+        command: ["sh", "-c", "ws=$(hyprctl activeworkspace -j | jq .id); hyprctl clients -j | jq -c --argjson ws \"$ws\" '[.[] | select(.workspace.id == $ws and (.floating | not)) | {x: .at[0], y: .at[1], w: .size[0], h: .size[1], a: .address}]'"]
+        stdout: StdioCollector {
+          onStreamFinished: {
+            try {
+              var r = JSON.parse(text)
+              var self = win.dragItem ? (win.dragItem.windows || []).map(function(t) { var a = String(t.address || ""); return a.indexOf("0x") === 0 ? a : "0x" + a }) : []
+              win.dragRects = r.filter(function(w) { return self.indexOf(w.a) === -1 })
+            } catch (e) { win.dragRects = [] }
+          }
+        }
+      }
+      // Drop preview: never takes input, so the drag stays with the sidebar.
+      PanelWindow {
+        screen: win.screen
+        visible: win.dragItem !== null
+        color: "transparent"
+        anchors { top: true; bottom: true; left: true; right: true }
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.namespace: "jake-sidebar-drop"
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+        mask: Region {}
+        Rectangle {
+          visible: !win.dragOverSidebar
+          x: win.dropRect ? win.dropRect.x : root.sidebarWidth + 12
+          y: win.dropRect ? win.dropRect.y : 12
+          width: win.dropRect ? win.dropRect.w : parent.width - root.sidebarWidth - 24
+          height: win.dropRect ? win.dropRect.h : parent.height - 24
+          radius: 6
+          color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
+          border.width: 2
+          border.color: root.urgent
+          Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
+          Behavior on width { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
+        }
+        Rectangle {
+          x: win.dragX + 14
+          y: win.dragY + 10
+          width: dragLabel.implicitWidth + 16
+          height: dragLabel.implicitHeight + 8
+          radius: 4
+          color: root.background
+          border.width: 1
+          border.color: root.faint
+          Text {
+            id: dragLabel
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: win.dragItem ? (win.dragItem.label || root.displayName(win.dragItem)) : ""
+            color: root.foreground
+            font.family: root.fontFamily; font.pixelSize: 12
+          }
+        }
+      }
+
+      // While searching, the rest of the screen catches one click to close it.
+      PanelWindow {
+        screen: win.screen
+        visible: root.searching && root.searchMonitor === win.monitorName
+        color: "transparent"
+        anchors { top: true; bottom: true; left: true; right: true }
+        margins.left: root.sidebarWidth
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.namespace: "jake-sidebar-search-dismiss"
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+        MouseArea {
+          anchors.fill: parent
+          acceptedButtons: Qt.AllButtons
+          onPressed: root.exitSearch("outside")
+        }
+      }
+
+      readonly property bool qsHere: root.qsOpen && root.qsMonitor === win.monitorName
+
+      // -- tray icon menu (drawn by the sidebar; native menus aren't available) --
+      readonly property bool trayHere: root.trayMenuItem !== null && root.trayMenuMonitor === win.monitorName
+      QsMenuOpener { id: trayRootOpener; menu: win.trayHere && root.trayMenuItem ? root.trayMenuItem.menu : null }
+      QsMenuOpener { id: traySubOpener; menu: win.trayHere ? root.trayMenuSub : null }
+      readonly property var trayEntries: {
+        var model = root.trayMenuSub ? traySubOpener.children : trayRootOpener.children
+        return model ? model.values : []
+      }
+
+      // -- overview (Super): every open window, zoomed out over the window area --
+      // Each preview starts exactly over its real window (minimized ones just off
+      // the left edge) and shrinks into the grid as the backdrop fades to opaque,
+      // so the windows look like they zoom out into it; closing reverses it.
+      readonly property bool overviewHere: root.overviewMonitor === win.monitorName && (root.overviewOpen || root.ovProgress > 0)
+      PanelWindow {
+        id: overviewWin
+        screen: win.screen
+        visible: win.overviewHere
+        color: "transparent"
+        anchors { top: true; bottom: true; left: true; right: true }
+        margins.left: root.sidebarWidth      // the sidebar is left alone
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.namespace: "jake-sidebar-overview"
+        WlrLayershell.keyboardFocus: win.overviewHere && root.overviewOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+
+        readonly property real p: root.ovProgress
+        // dragging one preview onto another
+        property string dragAddr: ""
+        property real dragX: 0
+        property real dragY: 0
+        property int dropIndex: -1
+        property string dropSide: ""
+        readonly property var wins: win.overviewHere ? root.overviewWindows() : []
+        readonly property int count: wins.length
+        readonly property int cols: Math.max(1, Math.ceil(Math.sqrt(count)))
+        readonly property int rowsN: Math.max(1, Math.ceil(count / cols))
+        readonly property real pad: 48
+        readonly property real gap: 28
+        readonly property real cellW: (width - pad * 2 - gap * (cols - 1)) / cols
+        readonly property real cellH: (height - pad * 2 - gap * (rowsN - 1)) / rowsN
+        function lerp(a, b) { return a + (b - a) * overviewWin.p }
+
+        Rectangle {
+          anchors.fill: parent
+          color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)   // fully opaque
+          opacity: overviewWin.p
+          focus: true
+          Keys.onEscapePressed: root.closeOverview()
+          MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; enabled: root.overviewOpen; onClicked: root.closeOverview() }
+        }
+
+        Text {
+          visible: overviewWin.count === 0
+          anchors.centerIn: parent
+          opacity: overviewWin.p
+          textFormat: Text.PlainText
+          text: "No open windows"
+          color: root.dim; font.family: root.fontFamily; font.pixelSize: 14
+        }
+
+        Repeater {
+          id: ovCells
+          model: overviewWin.wins
+          Item {
+            id: cell
+            required property var modelData
+            required property int index
+            anchors.fill: parent
+            readonly property bool hidden: root.isMinimized(modelData)
+            readonly property bool front: !hidden && modelData.activated
+            readonly property var geo: root.ovGeometry[root.addrOf(modelData)] || null
+            // the window's own size and where it sits on screen (this window's coordinates)
+            readonly property real srcW: geo ? geo.w : 1600
+            readonly property real srcH: geo ? geo.h : 1000
+            readonly property real startX: hidden || !geo ? -srcW : geo.x - win.screen.x - root.sidebarWidth
+            readonly property real startY: hidden || !geo ? (overviewWin.height - srcH) / 2 : geo.y - win.screen.y
+            // its slot in the grid (a short last row is centred)
+            readonly property int col: index % overviewWin.cols
+            readonly property int row: Math.floor(index / overviewWin.cols)
+            readonly property int inRow: row === overviewWin.rowsN - 1 ? overviewWin.count - overviewWin.cols * (overviewWin.rowsN - 1) : overviewWin.cols
+            readonly property real cellX: overviewWin.pad + col * (overviewWin.cellW + overviewWin.gap) + (overviewWin.cols - inRow) * (overviewWin.cellW + overviewWin.gap) / 2
+            readonly property real cellY: overviewWin.pad + row * (overviewWin.cellH + overviewWin.gap)
+            readonly property real fit: Math.min(overviewWin.cellW / srcW, (overviewWin.cellH - 34) / srcH)
+            readonly property real endW: srcW * fit
+            readonly property real endH: srcH * fit
+            readonly property real endX: cellX + (overviewWin.cellW - endW) / 2
+            readonly property real endY: cellY + (overviewWin.cellH - 34 - endH) / 2
+            readonly property bool dragged: overviewWin.dragAddr !== "" && overviewWin.dragAddr === root.addrOf(modelData)
+            property real grabX: 0
+            property real grabY: 0
+            z: dragged ? 10 : 0
+
+            Rectangle {
+              id: frame
+              // follows the pointer (a little smaller) while it's being dragged
+              x: cell.dragged ? overviewWin.dragX - cell.grabX : overviewWin.lerp(cell.startX, cell.endX) - 4
+              y: cell.dragged ? overviewWin.dragY - cell.grabY : overviewWin.lerp(cell.startY, cell.endY) - 4
+              width: overviewWin.lerp(cell.srcW, cell.endW) + 8
+              height: overviewWin.lerp(cell.srcH, cell.endH) + 8
+              scale: cell.dragged ? 0.85 : 1
+              opacity: cell.dragged ? 0.9 : 1
+              Behavior on scale { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
+              radius: 12
+              color: cellMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                   : !shot.hasContent ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
+              border.width: cell.front ? 2 * overviewWin.p : 0
+              border.color: root.urgent
+              ScreencopyView {
+                id: shot
+                anchors.fill: parent
+                anchors.margins: 4
+                captureSource: cell.modelData.wayland
+                live: win.overviewHere
+                opacity: cell.hidden ? 0.55 + 0.45 * (1 - overviewWin.p) : 1
+              }
+              Text {
+                visible: !shot.hasContent
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: root.overviewAppName(cell.modelData)
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 16
+              }
+              Rectangle {
+                visible: overviewWin.dropIndex === cell.index
+                x: overviewWin.dropSide === "l" ? 4 : parent.width / 2
+                y: 4
+                width: parent.width / 2 - 4
+                height: parent.height - 8
+                radius: 8
+                color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.28)
+                border.width: 2
+                border.color: root.urgent
+              }
+            }
+            Text {
+              x: cell.cellX
+              y: frame.y + frame.height + 8
+              width: overviewWin.cellW
+              opacity: overviewWin.p
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              text: (cell.hidden ? "◌ " : "") + String(cell.modelData.title || root.overviewAppName(cell.modelData))
+              color: cell.hidden ? root.dim : root.foreground
+              font.family: root.fontFamily; font.pixelSize: 12; font.bold: cell.front
+            }
+            MouseArea {
+              id: cellMouse
+              anchors.fill: frame
+              enabled: root.overviewOpen
+              hoverEnabled: true
+              acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+              cursorShape: cell.dragged ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+              preventStealing: true
+              property real pressX: 0
+              property real pressY: 0
+              property bool moved: false
+              onPressed: function(mouse) { pressX = mouse.x; pressY = mouse.y; moved = false }
+              onPositionChanged: function(mouse) {
+                if (!(pressedButtons & Qt.LeftButton)) return
+                var p = mapToItem(overviewWin.contentItem, mouse.x, mouse.y)
+                if (!cell.dragged && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
+                  moved = true
+                  var f = mapToItem(frame, pressX, pressY)
+                  cell.grabX = f.x; cell.grabY = f.y
+                  overviewWin.dragAddr = root.addrOf(cell.modelData)
+                }
+                if (!cell.dragged) return
+                overviewWin.dragX = p.x; overviewWin.dragY = p.y
+                // which other preview is under the pointer, and which half
+                var hit = -1, side = ""
+                for (var i = 0; i < ovCells.count; i++) {
+                  var c = ovCells.itemAt(i)
+                  if (!c || c === cell) continue
+                  var fr = c.children[0]
+                  if (p.x >= fr.x && p.x < fr.x + fr.width && p.y >= fr.y && p.y < fr.y + fr.height) {
+                    hit = i; side = p.x < fr.x + fr.width / 2 ? "l" : "r"; break
+                  }
+                }
+                overviewWin.dropIndex = hit
+                overviewWin.dropSide = side
+              }
+              onReleased: function(mouse) {
+                if (!cell.dragged) return
+                var target = overviewWin.dropIndex >= 0 ? ovCells.itemAt(overviewWin.dropIndex) : null
+                var side = overviewWin.dropSide
+                overviewWin.dragAddr = ""; overviewWin.dropIndex = -1; overviewWin.dropSide = ""
+                if (target) root.pairWindows(target.modelData, cell.modelData, side)
+              }
+              onCanceled: { overviewWin.dragAddr = ""; overviewWin.dropIndex = -1 }
+              onClicked: function(mouse) {
+                if (moved) { moved = false; return }
+                var t = cell.modelData
+                if (mouse.button === Qt.MiddleButton) { root.closeWindow(t); return }
+                root.closeOverview()
+                if (!(t.activated && !root.isMinimized(t))) root.activateWindow(t, root.shiftHeld)
+              }
+            }
+          }
+        }
+      }
+
+      // -- app right-click menu -------------------------------------------------
+      property var menuItem: null
+      property real menuY: 0
+      property bool menuGrab: false
+      property bool menuEntered: false
+      function openAppMenu(item, rowItem) {
+        var entries = root.appMenuEntries(item)
+        var h = 10
+        for (var i = 0; i < entries.length; i++) h += entries[i].sep ? 9 : 28
+        var y = rowItem.mapToItem(win.contentItem, 0, 0).y
+        win.menuY = Math.max(8, Math.min(y, win.height - h - 8))
+        win.menuEntered = false
+        win.menuItem = item
+      }
+      function closeAppMenu(why) {
+        win.menuGrab = false
+        win.menuItem = null
+      }
+      // Close if the focused window changes underneath it.
+      Connections {
+        target: Hyprland
+        function onActiveToplevelChanged() { if (win.menuItem) win.closeAppMenu("focus changed") }
+      }
+      // Close once the pointer has been away from the menu for a moment.
+      Timer {
+        id: menuLeaveTimer
+        interval: 700
+        onTriggered: win.closeAppMenu("pointer left")
+      }
+      PopupWindow {
+        id: appMenu
+        visible: win.menuItem !== null
+        anchor.window: win
+        anchor.rect.x: root.sidebarWidth - 8
+        anchor.rect.y: win.menuY
+        anchor.edges: Edges.Top | Edges.Left
+        anchor.gravity: Edges.Bottom | Edges.Right
+        anchor.adjustment: PopupAdjustment.Slide
+        implicitWidth: 190
+        implicitHeight: menuColumn.implicitHeight + 10
+        color: "transparent"
+        // Grab only once the popup is mapped, or Hyprland may ignore it.
+        onVisibleChanged: {
+          menuLeaveTimer.stop()
+          if (visible) Qt.callLater(function() { win.menuGrab = appMenu.visible })
+          else win.menuGrab = false
+        }
+        HoverHandler {
+          id: menuHover
+          onHoveredChanged: {
+            if (hovered) { win.menuEntered = true; menuLeaveTimer.stop() }
+            else if (win.menuEntered) menuLeaveTimer.restart()
+          }
+        }
+        Item {
+          anchors.fill: parent
+          focus: true
+          Keys.onEscapePressed: win.closeAppMenu("escape")
+        }
+        Rectangle {
+          anchors.fill: parent
+          radius: 6
+          color: root.background
+          border.width: 1
+          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+          Column {
+            id: menuColumn
+            x: 5; y: 5
+            width: parent.width - 10
+            Repeater {
+              model: root.appMenuEntries(win.menuItem)
+              Item {
+                id: menuRow
+                required property var modelData
+                width: menuColumn.width
+                height: modelData.sep ? 9 : 28
+                Rectangle {
+                  visible: !!menuRow.modelData.sep
+                  anchors.centerIn: parent
+                  width: parent.width - 8; height: 1
+                  color: root.faint
+                }
+                Rectangle {
+                  visible: !menuRow.modelData.sep
+                  anchors.fill: parent
+                  radius: 4
+                  color: menuMouse.containsMouse ? root.faint : "transparent"
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 10
+                    width: parent.width - 20
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: menuRow.modelData.label || ""
+                    color: menuRow.modelData.danger ? root.urgent : root.foreground
+                    font.family: root.fontFamily; font.pixelSize: 12
+                  }
+                  MouseArea {
+                    id: menuMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      // Run the action before closing: closing rebuilds the
+                      // menu, which destroys this row mid-handler.
+                      var item = win.menuItem, e = menuRow.modelData
+                      var w = win, r = root
+                      r.runAppMenu(item, e)
+                      Qt.callLater(function() { w.closeAppMenu("item clicked") })
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      // A click anywhere outside the menu closes it.
+      HyprlandFocusGrab {
+        windows: [appMenu, win]
+        active: win.menuGrab
+        onCleared: win.closeAppMenu("focus grab cleared")
+      }
+      // While the menu is open, a click anywhere on the sidebar just closes it
+      // (a right-click on an app row re-opens it for that app).
+      MouseArea {
+        anchors.fill: parent
+        z: 100
+        enabled: win.menuItem !== null
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onPressed: function(mouse) {
+          win.closeAppMenu("sidebar click")
+        }
+      }
+
+      // -- widget sections (added in edit mode): each widget's panel, kept open --
+      property var extraItems: ({})
+      Instantiator {
+        model: root.extraSections
+        delegate: ColumnLayout {
+          id: xsec
+          required property var modelData
+          readonly property string secId: modelData.id
+          readonly property string wid: root.widgetOf(secId)
+          readonly property var entry: {
+            var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+            return w ? w[xsec.wid] || null : null
+          }
+          parent: mainCol
+          Layout.fillWidth: true
+          spacing: 6
+          visible: root.sectionShown(secId)
+          opacity: root.sectionOpacity(secId)
+
+          property var panel: null
+          property bool noPanel: false
+          property int tries: 0
+
+          Text {
+            visible: root.setting(xsec.secId, "title") !== false
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: root.widgetName(xsec.wid).toUpperCase()
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            elide: Text.ElideRight
+          }
+          // "squeeze": content reflows to the sidebar's width; "shrink": drawn at the
+          // panel's own width and scaled down to fit (for fixed-width panels)
+          readonly property bool shrink: root.setting(secId, "fit") === "shrink"
+          readonly property real natW: xsec.panel ? Math.max(1, xsec.panel.contentWidth) : 1
+          readonly property real k: shrink ? Math.min(1, xbody.width / natW) : 1
+          Item {
+            id: xbody
+            Layout.fillWidth: true
+            Layout.preferredHeight: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
+            clip: true
+            Item {
+              id: xinner
+              width: xsec.shrink ? xsec.natW : xbody.width
+              height: xsec.panel ? Math.max(0, xsec.panel.contentHeight) : 0
+              scale: xsec.k
+              transformOrigin: Item.TopLeft
+            }
+            Text {
+              visible: xsec.noPanel
+              textFormat: Text.PlainText
+              text: "This widget has no panel to show."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
+          }
+          // the widget itself (its button stays hidden; only its panel is shown)
+          Loader {
+            id: xhost
+            visible: false
+            Layout.preferredWidth: 0
+            Layout.preferredHeight: 0
+            active: !!xsec.entry && !!xsec.entry.component
+            sourceComponent: xsec.entry ? xsec.entry.component : null
+            onLoaded: {
+              if ("fixedEdge" in item) item.fixedEdge = "start"
+              if ("bar" in item) item.bar = embedBar
+              if ("moduleName" in item) item.moduleName = xsec.wid
+              if ("settings" in item) {
+                var meta = xsec.entry && xsec.entry.metadata ? xsec.entry.metadata : {}
+                var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+                var merged = JSON.parse(JSON.stringify(defs))
+                var lay = root.barConfig && root.barConfig.layout ? root.barConfig.layout : {}
+                ;["left", "centerBegin", "center", "centerEnd", "right", "tray"].forEach(function(sec) {
+                  (lay[sec] || []).forEach(function(e) { if (e && e.id === xsec.wid) for (var k in e) if (k !== "id") merged[k] = e[k] })
+                })
+                item.settings = merged
+              }
+              embedTimer.restart()
+            }
+          }
+          // find the widget's panel, keep it open (its window hidden) and move its content here
+          Timer {
+            id: embedTimer
+            interval: 150
+            onTriggered: {
+              var item = xhost.item
+              if (!item) return
+              var ps = []
+              root.findPanels(item, ps, 0, [])
+              if (ps.length === 0) { if (++xsec.tries < 15) embedTimer.restart(); else xsec.noPanel = true; return }
+              var p = ps[0]
+              p.visible = false
+              p.contentRequested = true
+              if (typeof item.open === "function") item.open(); else p.open = true
+              xsec.panel = p
+              moveTimer.restart()
+            }
+          }
+          Timer {
+            id: moveTimer
+            interval: 60
+            onTriggered: {
+              var p = xsec.panel
+              if (!p) return
+              p.visible = false
+              for (var i = p.contentItem.length - 1; i >= 0; i--) {
+                var k = p.contentItem[i]
+                k.parent = xinner
+                if (!k.anchors.fill) k.width = Qt.binding(function() { return xinner.width })
+              }
+            }
+          }
+          // if it closes itself, open it again; its window never shows
+          Connections {
+            target: xsec.panel
+            function onOpenChanged() {
+              if (xsec.panel && !xsec.panel.open) Qt.callLater(function() {
+                if (xhost.item && typeof xhost.item.open === "function") xhost.item.open(); else if (xsec.panel) xsec.panel.open = true
+              })
+            }
+            function onVisibleChanged() { if (xsec.panel && xsec.panel.visible) xsec.panel.visible = false }
+          }
+        }
+        onObjectAdded: function(index, object) {
+          var next = Object.assign({}, win.extraItems); next[object.secId] = object; win.extraItems = next
+          Qt.callLater(win.applySectionOrder)
+        }
+        onObjectRemoved: function(index, object) {
+          var next = Object.assign({}, win.extraItems); delete next[object.secId]; win.extraItems = next
+          Qt.callLater(win.applySectionOrder)
+        }
+      }
+
+      // Put the column's pieces in the saved section order (each section moves
+      // with its parts; the panels that open above the bottom row go with it).
+      function applySectionOrder() {
+        var blocks = {
+          clock: [secClock], system: [secStats, secNet], workspaces: [secWs], search: [secSearch],
+          apps: [menuList, appList], bottom: [dockCol, trayPanel, settingsPanel, bottomSep, secBottom]
+        }
+        for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
+        var items = []
+        root.sectionOrder.forEach(function(id) { (blocks[id] || []).forEach(function(it) { items.push(it) }) })
+        var current = []
+        for (var i = 0; i < mainCol.children.length; i++) current.push(mainCol.children[i])
+        var same = items.length === current.length && items.every(function(it, k) { return current[k] === it })
+        if (same) return
+        items.forEach(function(it) { it.parent = null })
+        items.forEach(function(it) { it.parent = mainCol })
+      }
+      Component.onCompleted: Qt.callLater(win.applySectionOrder)
+      Connections {
+        target: root
+        function onSectionOrderChanged() { Qt.callLater(win.applySectionOrder) }
+      }
+
+      // -- edit mode: a labelled outline on each section; clicking one picks it --
+      readonly property bool editHere: root.editing && root.editMonitor === win.monitorName
+      Item {
+        id: editOverlay
+        anchors.fill: parent
+        z: 60
+        visible: win.editHere
+        // dragging a section to a new place
+        property string dragId: ""
+        property real dragY: 0
+        property real grabY: 0
+        property int dropIndex: -1
+        property bool dropHide: false     // dragged past the sidebar's edge
+        function dropIndexAt(y) {
+          var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
+          var n = 0
+          for (var i = 0; i < others.length; i++) {
+            var b = editOverlay.boxes[others[i]]
+            if (y > b.y + b.h / 2) n = i + 1
+          }
+          return n
+        }
+        readonly property real dropLineY: {
+          if (dragId === "" || dropIndex < 0) return -100
+          var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
+          if (others.length === 0) return -100
+          if (dropIndex === 0) return editOverlay.boxes[others[0]].y - 4
+          var b = editOverlay.boxes[others[Math.min(dropIndex, others.length) - 1]]
+          return b.y + b.h + 3
+        }
+        function finishDrag() {
+          var id = editOverlay.dragId
+          var idx = editOverlay.dropIndex
+          var hide = editOverlay.dropHide
+          editOverlay.dragId = ""
+          editOverlay.dropIndex = -1
+          editOverlay.dropHide = false
+          if (!id) return
+          if (hide) { root.removeSection(id); return }
+          if (idx < 0) return
+          var order = root.sectionOrder.filter(function(x) { return x !== id })
+          // the index counts sections with outlines; map it onto the full order
+          var shown = order.filter(function(x) { return editOverlay.boxes[x] })
+          var before = idx < shown.length ? shown[idx] : null
+          var at = before ? order.indexOf(before) : order.length
+          order.splice(at, 0, id)
+          // one write: the new order, and a hidden section dropped back in shows again
+          var next = JSON.parse(JSON.stringify(root.userSettings))
+          next.order = order
+          if (root.setting(id, "show") === false) { next[id] = next[id] || {}; next[id].show = true }
+          root.saveSettings(next)
+        }
+        Rectangle {
+          readonly property var bottomBox: editOverlay.boxes["bottom"]
+          visible: !!bottomBox && editOverlay.dragId === ""
+          z: 6
+          x: parent.width - width - 14
+          y: bottomBox ? bottomBox.y - height - 6 : 0
+          width: addText.implicitWidth + 14
+          height: 18
+          radius: 4
+          color: addMouse.containsMouse || root.addOpen ? root.foreground : root.background
+          border.width: 1
+          border.color: root.dim
+          Text { id: addText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "+ add section"; color: addMouse.containsMouse || root.addOpen ? root.background : root.foreground
+            font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+          MouseArea { id: addMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = !root.addOpen }
+        }
+        Rectangle {
+          visible: editOverlay.dragId !== "" && !editOverlay.dropHide
+          z: 5
+          x: 10
+          width: parent.width - 20
+          height: 2
+          radius: 1
+          y: editOverlay.dropLineY
+          color: root.foreground
+        }
+        // each section's extent, from the items that make it up
+        function boxFor(items) {
+          var top = 1e9, bottom = -1e9
+          for (var i = 0; i < items.length; i++) {
+            var it = items[i]
+            if (!it || !it.visible) continue
+            top = Math.min(top, mainCol.y + it.y)
+            bottom = Math.max(bottom, mainCol.y + it.y + it.height)
+          }
+          return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
+        }
+        readonly property var boxes: {
+          var rev = mainCol.height + secClock.y + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secBottom.y
+          var out = {
+            clock: boxFor([secClock]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
+            search: boxFor([secSearch]), apps: boxFor([appList]), bottom: boxFor([secBottom])
+          }
+          for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
+          return out
+        }
+        Repeater {
+          model: root.editSections
+          Item {
+            id: ebox
+            required property var modelData
+            readonly property var box: editOverlay.boxes[modelData.id]
+            readonly property bool picked: root.editSection === modelData.id
+            readonly property bool hiddenSec: root.setting(modelData.id, "show") === false
+            readonly property bool dragged: editOverlay.dragId === modelData.id
+            visible: !!box
+            x: 8
+            y: dragged ? editOverlay.dragY - editOverlay.grabY : (box ? box.y : 0)
+            z: dragged ? 4 : 0
+            opacity: dragged ? (editOverlay.dropHide ? 0.45 : 0.85) : 1
+            width: parent.width - 16
+            height: box ? box.h : 0
+            // dashed outline (solid for the one being edited)
+            Canvas {
+              anchors.fill: parent
+              visible: !ebox.picked
+              onWidthChanged: requestPaint()
+              onHeightChanged: requestPaint()
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                ctx.strokeStyle = Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
+                ctx.lineWidth = 1
+                ctx.setLineDash([4, 3])
+                var r = 8, w = width - 1, h = height - 1
+                ctx.beginPath()
+                ctx.moveTo(r + 0.5, 0.5); ctx.lineTo(w - r, 0.5); ctx.arcTo(w, 0.5, w, r, r)
+                ctx.lineTo(w, h - r); ctx.arcTo(w, h, w - r, h, r)
+                ctx.lineTo(r + 0.5, h); ctx.arcTo(0.5, h, 0.5, h - r, r)
+                ctx.lineTo(0.5, r); ctx.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
+                ctx.stroke()
+              }
+            }
+            Rectangle {
+              anchors.fill: parent
+              visible: ebox.picked
+              radius: 8
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+              border.width: 2
+              border.color: root.foreground
+            }
+            // the label, sitting on the outline
+            Rectangle {
+              x: 8
+              y: -7
+              width: elabel.implicitWidth + 8
+              height: 13
+              radius: 3
+              color: ebox.picked ? root.foreground : root.background
+              Text {
+                id: elabel
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: ebox.modelData.label + (ebox.dragged && editOverlay.dropHide ? " · RELEASE TO REMOVE"
+                      : ebox.picked ? " · EDITING" : (ebox.hiddenSec ? " · HIDDEN" : ""))
+                color: ebox.picked ? root.background : root.dim
+                font.family: root.fontFamily; font.pixelSize: 8; font.letterSpacing: 1; font.bold: ebox.picked
+              }
+            }
+            // remove button, sitting on the outline's top-right corner
+            Rectangle {
+              visible: ebox.modelData.id !== "bottom" && !ebox.dragged
+              z: 3
+              x: parent.width - width - 8
+              y: -7
+              width: 15
+              height: 13
+              radius: 3
+              color: xRemMouse.containsMouse ? root.urgent : root.background
+              border.width: 1
+              border.color: xRemMouse.containsMouse ? root.urgent : root.dim
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "✕"; color: xRemMouse.containsMouse ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
+              MouseArea { id: xRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(ebox.modelData.id) }
+            }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: ebox.dragged ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+              acceptedButtons: Qt.LeftButton
+              preventStealing: true
+              property real pressY: 0
+              property bool moved: false
+              onPressed: function(mouse) { pressY = mouse.y; moved = false }
+              onPositionChanged: function(mouse) {
+                if (!(pressedButtons & Qt.LeftButton)) return
+                var p = mapToItem(editOverlay, mouse.x, mouse.y)
+                if (!ebox.dragged && Math.abs(mouse.y - pressY) > 8) {
+                  moved = true
+                  editOverlay.grabY = pressY
+                  editOverlay.dragId = ebox.modelData.id
+                  root.editSection = ebox.modelData.id
+                }
+                if (!ebox.dragged) return
+                editOverlay.dragY = p.y
+                editOverlay.dropHide = ebox.modelData.id !== "bottom" && p.x > editOverlay.width + 12
+                editOverlay.dropIndex = editOverlay.dropHide ? -1 : editOverlay.dropIndexAt(p.y)
+              }
+              onReleased: if (ebox.dragged) editOverlay.finishDrag()
+              onCanceled: { editOverlay.dragId = ""; editOverlay.dropIndex = -1; editOverlay.dropHide = false }
+              onClicked: if (!moved) root.editSection = ebox.modelData.id
+            }
+          }
+        }
+      }
+
+      // -- the editor, next to the sidebar ------------------------------------------
+      component OptRow: Item {
+        id: orow
+        property string label: ""
+        property var options: []      // [[value, text], ...]
+        property var current
+        signal picked(var value)
+        Layout.fillWidth: true
+        implicitHeight: 24
+        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: orow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+        Row {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: 0
+          Repeater {
+            model: orow.options
+            Row {
+              required property var modelData
+              required property int index
+              Text { visible: index > 0; textFormat: Text.PlainText; text: " / "; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+              Text {
+                readonly property bool sel: orow.current === modelData[0]
+                textFormat: Text.PlainText
+                text: modelData[1]
+                color: sel ? root.foreground : (optMouse.containsMouse ? root.foreground : root.dim)
+                font.family: root.fontFamily; font.pixelSize: 11; font.bold: sel; font.underline: sel
+                MouseArea { id: optMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: orow.picked(modelData[0]) }
+              }
+            }
+          }
+        }
+      }
+      component StepRow: Item {
+        id: srow
+        property string label: ""
+        property real value: 0
+        property real step: 1
+        property real min: 0
+        property real max: 100
+        property string suffix: ""
+        signal changed(real value)
+        Layout.fillWidth: true
+        implicitHeight: 24
+        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: srow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+        Row {
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: 8
+          Text { textFormat: Text.PlainText; text: "−"; color: minusMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 12
+            MouseArea { id: minusMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: srow.changed(Math.max(srow.min, srow.value - srow.step)) } }
+          Text { textFormat: Text.PlainText; text: srow.value + srow.suffix; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
+          Text { textFormat: Text.PlainText; text: "+"; color: plusMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 12
+            MouseArea { id: plusMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: srow.changed(Math.min(srow.max, srow.value + srow.step)) } }
+        }
+      }
+      component EdHeading: Text {
+        Layout.fillWidth: true
+        Layout.topMargin: 6
+        textFormat: Text.PlainText
+        color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+      }
+
+      PanelWindow {
+        id: editorWin
+        screen: win.screen
+        visible: win.editHere
+        color: "transparent"
+        anchors { top: true; bottom: true; left: true }
+        margins.left: root.sidebarWidth
+        implicitWidth: 380
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.namespace: "jake-sidebar-editor"
+        WlrLayershell.keyboardFocus: win.editHere && root.addOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+
+        Rectangle {
+          anchors.fill: parent
+          color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
+          Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
+          Rectangle { width: 1; height: parent.height; color: root.faint }
+
+          ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            anchors.leftMargin: 22
+            spacing: 8
+
+            RowLayout {
+              Layout.fillWidth: true
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 14; font.bold: true }
+              Rectangle {
+                implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 4
+                color: cancelMouse.containsMouse ? root.faint : "transparent"
+                border.width: 1; border.color: root.dim
+                Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                MouseArea { id: cancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.cancelEditing() }
+              }
+              Rectangle {
+                Layout.leftMargin: 4
+                implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 4
+                color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
+                Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
+                MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
+              }
+            }
+            Text { Layout.fillWidth: true; Layout.topMargin: 4; textFormat: Text.PlainText; wrapMode: Text.WordWrap; text: "Click a section in the sidebar, or pick one. Drag a section to move it, or out past the edge to remove it."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+
+            // section picker, as plain text
+            GridLayout {
+              Layout.fillWidth: true
+              Layout.bottomMargin: 6
+              columns: 3
+              rowSpacing: 6
+              columnSpacing: 6
+              Repeater {
+                model: root.editSections
+                Text {
+                  required property var modelData
+                  readonly property bool sel: root.editSection === modelData.id
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  text: (sel ? "› " : "  ") + modelData.label
+                  color: sel ? root.foreground : (pickMouse.containsMouse ? root.foreground : root.dim)
+                  font.family: root.fontFamily; font.pixelSize: 10; font.letterSpacing: 1; font.bold: sel
+                  MouseArea { id: pickMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.editSection = modelData.id }
+                }
+              }
+            }
+            Text {
+              Layout.bottomMargin: 4
+              visible: !root.addOpen
+              textFormat: Text.PlainText
+              text: "+ Add section"
+              color: addLinkMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11
+              MouseArea { id: addLinkMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = true }
+            }
+
+            // the "Add section" picker (takes the place of the section's settings)
+            ColumnLayout {
+              visible: root.addOpen
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              spacing: 8
+              RowLayout {
+                Layout.fillWidth: true
+                Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "ADD SECTION"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10; font.letterSpacing: 1; font.bold: true }
+                Text {
+                  textFormat: Text.PlainText; text: "close ✕"; color: addCloseMouse.containsMouse ? root.foreground : root.dim
+                  font.family: root.fontFamily; font.pixelSize: 10
+                  MouseArea { id: addCloseMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = false }
+                }
+              }
+              Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                radius: 5
+                color: "transparent"
+                border.width: 1
+                border.color: addInput.activeFocus ? root.dim : root.faint
+                TextInput {
+                  id: addInput
+                  anchors.fill: parent
+                  anchors.leftMargin: 10
+                  anchors.rightMargin: 10
+                  verticalAlignment: TextInput.AlignVCenter
+                  clip: true
+                  color: root.foreground
+                  font.family: root.fontFamily; font.pixelSize: 11
+                  onTextChanged: root.addQuery = text
+                  Keys.onPressed: function(event) {
+                    var n = root.addPickable.length
+                    if (event.key === Qt.Key_Down) { root.addIndex = n ? (root.addIndex + 1) % n : 0; event.accepted = true }
+                    else if (event.key === Qt.Key_Up) { root.addIndex = n ? (root.addIndex - 1 + n) % n : 0; event.accepted = true }
+                    else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.addPick(root.addPickable[root.addIndex]); event.accepted = true }
+                    else if (event.key === Qt.Key_Escape) { if (text) text = ""; else root.addOpen = false; event.accepted = true }
+                  }
+                  Connections {
+                    target: root
+                    function onAddOpenChanged() { addInput.text = ""; if (root.addOpen) Qt.callLater(function() { addInput.forceActiveFocus() }) }
+                  }
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !parent.text
+                    textFormat: Text.PlainText
+                    text: "Search widgets and sections…"
+                    color: root.dim; font.family: root.fontFamily; font.pixelSize: 11
+                  }
+                }
+              }
+              ListView {
+                id: addList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 1
+                boundsBehavior: Flickable.StopAtBounds
+                model: root.addRows
+                delegate: Item {
+                  id: arow
+                  required property var modelData
+                  readonly property int pick: root.addPickable.indexOf(modelData)
+                  readonly property bool sel: pick >= 0 && pick === root.addIndex
+                  width: addList.width
+                  height: modelData.kind === "header" ? 28 : 40
+                  Text {
+                    visible: arow.modelData.kind === "header"
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 6
+                    textFormat: Text.PlainText
+                    text: arow.modelData.name
+                    color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+                  }
+                  Rectangle {
+                    visible: arow.modelData.kind !== "header"
+                    anchors.fill: parent
+                    radius: 4
+                    color: arow.sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) : "transparent"
+                    Rectangle { visible: arow.sel; width: 2; height: parent.height - 12; anchors.verticalCenter: parent.verticalCenter; color: root.foreground }
+                    ColumnLayout {
+                      anchors.fill: parent
+                      anchors.leftMargin: 10
+                      anchors.rightMargin: 8
+                      spacing: 1
+                      RowLayout {
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "+ " + arow.modelData.name; elide: Text.ElideRight
+                          color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: arow.sel }
+                        Text { textFormat: Text.PlainText; text: (arow.modelData.cat || "").toLowerCase(); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                      }
+                      Text { Layout.fillWidth: true; visible: !!arow.modelData.desc; textFormat: Text.PlainText; text: arow.modelData.desc || ""; elide: Text.ElideRight
+                        color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onEntered: if (arow.pick >= 0) root.addIndex = arow.pick
+                      onClicked: root.addPick(arow.modelData)
+                    }
+                  }
+                }
+              }
+              Text {
+                visible: root.addPickable.length === 0
+                textFormat: Text.PlainText
+                text: root.addQuery ? "Nothing matches “" + root.addQuery + "”." : "Everything is already in the sidebar."
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+              }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "↑↓ to move · Enter to add · Esc to close. A widget section keeps its panel open in the sidebar."
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+            }
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
+
+            readonly property var onOff: [[true, "on"], [false, "off"]]
+
+            // CLOCK
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "clock"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "CLOCK" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("clock", "show"); onPicked: function(v) { root.setSetting("clock", "show", v) } }
+              OptRow { label: "Format"; options: [[true, "24h"], [false, "12h"]]; current: root.setting("clock", "h24"); onPicked: function(v) { root.setSetting("clock", "h24", v) } }
+              OptRow { label: "Date"; options: parent.parent.onOff; current: root.setting("clock", "date"); onPicked: function(v) { root.setSetting("clock", "date", v) } }
+              OptRow { label: "Seconds"; options: parent.parent.onOff; current: root.setting("clock", "seconds"); onPicked: function(v) { root.setSetting("clock", "seconds", v) } }
+            }
+            // SYSTEM
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "system"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "SYSTEM" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("system", "show"); onPicked: function(v) { root.setSetting("system", "show", v) } }
+              OptRow { label: "CPU"; options: parent.parent.onOff; current: root.setting("system", "cpu"); onPicked: function(v) { root.setSetting("system", "cpu", v) } }
+              OptRow { label: "Memory"; options: parent.parent.onOff; current: root.setting("system", "mem"); onPicked: function(v) { root.setSetting("system", "mem", v) } }
+              OptRow { label: "Disk"; options: parent.parent.onOff; current: root.setting("system", "disk"); onPicked: function(v) { root.setSetting("system", "disk", v) } }
+              OptRow { label: "Network speed"; options: parent.parent.onOff; current: root.setting("system", "network"); onPicked: function(v) { root.setSetting("system", "network", v) } }
+              StepRow { label: "Refresh every"; value: root.setting("system", "refresh"); min: 1; max: 10; suffix: " s"; onChanged: function(v) { root.setSetting("system", "refresh", v) } }
+            }
+            // WORKSPACES
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "workspaces"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "WORKSPACES" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("workspaces", "show"); onPicked: function(v) { root.setSetting("workspaces", "show", v) } }
+              StepRow { label: "Always show"; value: root.setting("workspaces", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("workspaces", "count", v) } }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Workspaces past that appear while they have windows."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // SEARCH
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "search"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "SEARCH" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("search", "show"); onPicked: function(v) { root.setSetting("search", "show", v) } }
+              OptRow { label: "CLIP button"; options: parent.parent.onOff; current: root.setting("search", "clip"); onPicked: function(v) { root.setSetting("search", "clip", v) } }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Super+Space opens the search either way."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // APP LIST
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "apps"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "APP LIST" }
+              OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
+              OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
+              OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
+              OptRow { label: "Open indicator"; options: [["bar", "bar + dot"], ["dot", "dot"], ["none", "none"]]; current: root.setting("apps", "indicator"); onPicked: function(v) { root.setSetting("apps", "indicator", v) } }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // a widget section
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection.indexOf("w:") === 0
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: root.widgetName(root.widgetOf(root.editSection)).toUpperCase() + " · WIDGET" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
+              OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") !== false; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
+              OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
+              Text {
+                Layout.topMargin: 4
+                textFormat: Text.PlainText; text: "Remove this section"
+                color: remMouse.containsMouse ? root.urgent : root.dim
+                font.family: root.fontFamily; font.pixelSize: 11
+                MouseArea { id: remMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
+              }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "The widget's own panel, kept open here. Squeeze reflows it to the sidebar's width; shrink scales it down whole (better for fixed-width panels like the calendar)."
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // BOTTOM BAR
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "bottom"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "BOTTOM BAR" }
+              OptRow { label: "Plugins"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
+              OptRow { label: "Tray icons"; options: parent.parent.onOff; current: root.setting("bottom", "tray"); onPicked: function(v) { root.setSetting("bottom", "tray", v) } }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single plugins or tray icons in ⚙ › Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+
+            Text {
+              visible: !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
+              Layout.topMargin: 4
+              textFormat: Text.PlainText; text: "Remove this section"
+              color: bRemMouse.containsMouse ? root.urgent : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11
+              MouseArea { id: bRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
+            }
+            Item { visible: !root.addOpen; Layout.fillHeight: true }
+
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
+            EdHeading { text: "WHOLE SIDEBAR" }
+            StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
+            RowLayout {
+              Layout.fillWidth: true
+              Text {
+                textFormat: Text.PlainText; text: "Reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
+              }
+              Item { Layout.fillWidth: true }
+              Text {
+                visible: JSON.stringify(root.sectionOrder) !== JSON.stringify(root.defaultOrder)
+                textFormat: Text.PlainText; text: "Reset order"; color: resetOrderMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: resetOrderMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting("", "order", root.defaultOrder) }
+              }
+            }
+          }
+        }
+      }
+
+      ColumnLayout {
+        id: mainCol
+        anchors.fill: parent
+        anchors.margins: 16
+        anchors.bottomMargin: 10
+        spacing: 14
+
+        // -- clock --------------------------------------------------------
+        RowLayout {
+          id: secClock
+          visible: root.sectionShown("clock")
+          opacity: root.sectionOpacity("clock")
+          Layout.fillWidth: true
+          Text {
+            textFormat: Text.PlainText
+            text: Qt.formatTime(clock.date, root.setting("clock", "h24") ? (root.setting("clock", "seconds") ? "HH:mm:ss" : "HH:mm")
+                                                                        : (root.setting("clock", "seconds") ? "h:mm:ss AP" : "h:mm AP"))
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: 30
+            font.weight: Font.Light
+          }
+          Item { Layout.fillWidth: true }
+          Text {
+            visible: root.setting("clock", "date")
+            Layout.alignment: Qt.AlignBottom
+            Layout.bottomMargin: 5
+            textFormat: Text.PlainText
+            text: Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "ddd d MMM").toUpperCase()
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            font.letterSpacing: 1
+          }
+        }
+
+        // -- cpu / mem / disk ---------------------------------------------
+        RowLayout {
+          id: secStats
+          visible: root.sectionShown("system") && (root.setting("system", "cpu") || root.setting("system", "mem") || root.setting("system", "disk"))
+          opacity: root.sectionOpacity("system")
+          Layout.fillWidth: true
+          spacing: 14
+          Repeater {
+            model: [["CPU", root.cpu, "cpu"], ["MEM", root.mem, "mem"], ["DSK", root.disk, "disk"]].filter(function(m) { return root.setting("system", m[2]) })
+            RowLayout {
+              required property var modelData
+              spacing: 5
+              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              Text {
+                textFormat: Text.PlainText
+                text: Math.round(modelData[1]) + "%"
+                color: modelData[1] >= 85 ? root.urgent : root.foreground
+                font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
+              }
+            }
+          }
+          Item { Layout.fillWidth: true }
+        }
+
+        // -- network --------------------------------------------------------
+        RowLayout {
+          id: secNet
+          visible: root.sectionShown("system") && root.setting("system", "network")
+          opacity: root.sectionOpacity("system")
+          Layout.fillWidth: true
+          spacing: 10
+          Repeater {
+            model: [["DOWN", root.rxRate, root.rxHistory], ["UP", root.txRate, root.txHistory]]
+            ColumnLayout {
+              required property var modelData
+              Layout.fillWidth: true
+              Layout.preferredWidth: 1
+              spacing: 2
+              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              RowLayout {
+                spacing: 3
+                Text { textFormat: Text.PlainText; text: root.rateParts(modelData[1])[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 22; font.bold: true }
+                Text { Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 3; textFormat: Text.PlainText; text: root.rateParts(modelData[1])[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              }
+              // sparkline
+              Row {
+                id: spark
+                readonly property var hist: modelData[2]
+                readonly property real peak: Math.max.apply(null, [1].concat(hist))
+                Layout.fillWidth: true
+                Layout.preferredHeight: 22
+                spacing: 1
+                Repeater {
+                  model: 24
+                  Rectangle {
+                    required property int index
+                    readonly property real v: {
+                      var h = spark.hist, i = index - (24 - h.length)
+                      return i >= 0 ? h[i] / spark.peak : 0
+                    }
+                    width: Math.max(1, (spark.width - 23) / 24)
+                    height: Math.max(1, v * 22)
+                    y: 22 - height
+                    color: v > 0 ? root.foreground : root.faint
+                    opacity: 0.35 + v * 0.65
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // -- workspaces -------------------------------------------------------
+        Flow {
+          id: secWs
+          visible: root.sectionShown("workspaces")
+          opacity: root.sectionOpacity("workspaces")
+          Layout.fillWidth: true
+          spacing: 6
+          Repeater {
+            model: {
+              var ids = []
+              for (var n = 1; n <= root.setting("workspaces", "count"); n++) ids.push(n)
+              var all = Hyprland.workspaces.values
+              for (var i = 0; i < all.length; i++) {
+                var ws = all[i]
+                if (ws.id > 0 && ws.monitor && ws.monitor.name === win.monitorName && ids.indexOf(ws.id) === -1) ids.push(ws.id)
+              }
+              return ids.sort(function(a, b) { return a - b })
+            }
+            Rectangle {
+              id: wsBox
+              required property int modelData
+              readonly property bool active: win.monitor && win.monitor.activeWorkspace && win.monitor.activeWorkspace.id === modelData
+              readonly property bool occupied: {
+                var all = Hyprland.workspaces.values
+                for (var i = 0; i < all.length; i++) if (all[i].id === modelData) return all[i].toplevels.values.length > 0
+                return false
+              }
+              width: 24; height: 24; radius: 4
+              color: active ? root.foreground : "transparent"
+              border.width: 1
+              border.color: active ? root.foreground : (occupied ? root.dim : root.faint)
+              Text {
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: ((wsBox.modelData - 1) % 10 + 1).toString()
+                color: wsBox.active ? root.background : (wsBox.occupied ? root.foreground : root.dim)
+                font.family: root.fontFamily; font.pixelSize: 11; font.bold: wsBox.active
+              }
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + wsBox.modelData + "\" })"))
+              }
+            }
+          }
+        }
+
+        // -- search / Omarchy menu ------------------------------------------------
+        Rectangle {
+          id: secSearch
+          visible: root.sectionShown("search")
+          opacity: root.sectionOpacity("search")
+          readonly property bool active: root.searching && root.searchMonitor === win.monitorName
+          Layout.fillWidth: true
+          Layout.preferredHeight: 32
+          radius: 6
+          color: active ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : (searchMouse.containsMouse ? root.faint : "transparent")
+          border.width: 1
+          border.color: active ? root.dim : root.faint
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 6
+            spacing: 8
+            Text { textFormat: Text.PlainText; text: "\uf002"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            Item {
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              TextInput {
+                id: searchInput
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                clip: true
+                color: root.foreground
+                selectionColor: root.faint
+                font.family: root.fontFamily
+                font.pixelSize: 12
+                enabled: root.searching && root.searchMonitor === win.monitorName
+                onTextChanged: if (root.query !== text) root.query = text
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Down || (event.key === Qt.Key_N && (event.modifiers & Qt.ControlModifier)) || (event.key === Qt.Key_J && (event.modifiers & Qt.ControlModifier))) { root.moveSelection(1); event.accepted = true }
+                  else if (event.key === Qt.Key_Up || (event.key === Qt.Key_P && (event.modifiers & Qt.ControlModifier)) || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) { root.moveSelection(-1); event.accepted = true }
+                  else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.activateSearchRow(root.searchRows[root.selectedIndex]); event.accepted = true }
+                  else if (event.key === Qt.Key_Escape) {
+                    if (text) text = ""
+                    else if (root.activeMenu !== "root") root.menuBack()
+                    else root.exitSearch()
+                    event.accepted = true
+                  } else if (event.key === Qt.Key_Backspace && text === "" && root.activeMenu !== "root") { root.menuBack(); event.accepted = true }
+                  else if (event.key === Qt.Key_Right && text === "") {
+                    var r = root.searchRows[root.selectedIndex]
+                    if (r && (r.kind === "menu" || r.kind === "link" || r.provider === "apps")) { root.activateSearchRow(r); event.accepted = true }
+                  } else if (event.key === Qt.Key_Left && text === "" && root.activeMenu !== "root") { root.menuBack(); event.accepted = true }
+                }
+                Connections {
+                  target: root
+                  function onSearchingChanged() {
+                    if (root.searching && root.searchMonitor === win.monitorName) Qt.callLater(function() { searchInput.forceActiveFocus() })
+                    else searchInput.text = ""
+                  }
+                  function onQueryChanged() { if (searchInput.text !== root.query) searchInput.text = root.query }
+                }
+              }
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: searchInput.text === ""
+                width: parent.width
+                textFormat: Text.PlainText
+                text: root.searching && root.activeMenu !== "root" && root.menuItems[root.activeMenu]
+                      ? "Search " + (root.menuItems[root.activeMenu].title || root.menuItems[root.activeMenu].label) + "…" : "Search…"
+                color: root.dim
+                font.family: root.fontFamily; font.pixelSize: 12
+                elide: Text.ElideRight
+              }
+            }
+            Rectangle {
+              visible: root.setting("search", "clip")
+              Layout.preferredHeight: 20
+              Layout.preferredWidth: clipText.implicitWidth + 12
+              radius: 3
+              color: clipMouse.containsMouse ? root.faint : "transparent"
+              border.width: 1
+              border.color: root.dim
+              Text { id: clipText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "CLIP"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 9; font.bold: true }
+              MouseArea {
+                id: clipMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { root.exitSearch(); root.run("omarchy-shell shell toggle omarchy.clipboard") }
+              }
+              z: 2
+            }
+          }
+          MouseArea {
+            id: searchMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.IBeamCursor
+            visible: !parent.active
+            onClicked: root.enterSearch(win.monitorName)
+            z: 1
+          }
+        }
+
+        // -- menu results (replace the app list while searching) ---------------
+        ListView {
+          id: menuList
+          visible: root.searching && root.searchMonitor === win.monitorName
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredHeight: 0
+          Layout.minimumHeight: 0
+          clip: true
+          spacing: 2
+          boundsBehavior: Flickable.StopAtBounds
+          model: visible ? root.searchRows : []
+          currentIndex: root.selectedIndex
+          onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+
+          delegate: Item {
+            id: mrow
+            required property var modelData
+            required property int index
+            readonly property bool selected: index === root.selectedIndex
+            width: menuList.width
+            height: modelData.detail && root.query ? 40 : 32
+            opacity: modelData.disabled ? 0.45 : 1
+
+            Rectangle {
+              anchors.fill: parent
+              radius: 6
+              color: mrow.selected ? root.faint : "transparent"
+            }
+            RowLayout {
+              anchors.fill: parent
+              anchors.leftMargin: 10
+              anchors.rightMargin: 10
+              spacing: 10
+              Text {
+                Layout.preferredWidth: 16
+                horizontalAlignment: Text.AlignHCenter
+                textFormat: Text.PlainText
+                text: mrow.modelData.kind === "back" ? "‹" : (mrow.modelData.icon || "")
+                color: mrow.selected ? root.foreground : root.dim
+                font.family: mrow.modelData.iconFont || root.fontFamily
+                font.pixelSize: 13
+              }
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Text {
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  text: mrow.modelData.label
+                  color: root.foreground
+                  font.family: root.fontFamily; font.pixelSize: 12
+                  font.bold: mrow.modelData.kind === "back"
+                  elide: Text.ElideRight
+                }
+                Text {
+                  Layout.fillWidth: true
+                  visible: !!mrow.modelData.detail && !!root.query
+                  textFormat: Text.PlainText
+                  text: mrow.modelData.detail || ""
+                  color: root.dim
+                  font.family: root.fontFamily; font.pixelSize: 9
+                  elide: Text.ElideRight
+                }
+              }
+              Text {
+                visible: mrow.modelData.kind === "menu" || mrow.modelData.kind === "link" || mrow.modelData.provider === "apps"
+                textFormat: Text.PlainText
+                text: "›"
+                color: root.dim
+                font.family: root.fontFamily; font.pixelSize: 13
+              }
+            }
+            MouseArea {
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: mrow.modelData.disabled ? Qt.ArrowCursor : Qt.PointingHandCursor
+              onEntered: if (!mrow.modelData.disabled) root.selectedIndex = mrow.index
+              onClicked: root.activateSearchRow(mrow.modelData)
+            }
+          }
+        }
+
+        // -- apps: pinned first, then anything else that is running ---------------
+        ListView {
+          id: appList
+          // insertion line while dragging an app within the sidebar
+          Rectangle {
+            visible: !!win.listDrop && !!win.dragItem
+            z: 10
+            x: 6
+            width: appList.width - 12
+            height: 2
+            radius: 1
+            y: win.listDrop ? win.listDrop.y - appList.contentY : 0
+            color: root.urgent
+          }
+          visible: !(root.searching && root.searchMonitor === win.monitorName)
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          Layout.preferredHeight: 0
+          Layout.minimumHeight: 0
+          clip: true
+          spacing: 2
+          boundsBehavior: Flickable.StopAtBounds
+          model: root.appItems(win.monitorName)
+
+          delegate: Item {
+            id: row
+            required property var modelData
+            readonly property var entry: modelData.entry
+            readonly property var windows: modelData.windows
+            readonly property bool running: windows.length > 0
+            readonly property bool focused: windows.some(function(t) { return t.activated })
+            readonly property var shownWindow: {
+              for (var i = 0; i < windows.length; i++) if (windows[i].activated) return windows[i]
+              return windows.length > 0 ? windows[0] : null
+            }
+            readonly property bool multi: windows.length > 1 && root.setting("apps", "group")
+            readonly property bool expanded: multi && !!root.expandedApps[modelData.key]
+            width: appList.width
+            height: modelData.separator ? 18 : root.rowH + (expanded ? windows.length * 30 + 4 : 0)
+
+            Item {
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              height: root.rowH
+              visible: !row.modelData.separator
+
+              Rectangle {
+                anchors.fill: parent
+                radius: 6
+                color: win.springKey === "a:" + row.modelData.key ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
+                     : row.focused ? root.faint : (rowMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+              }
+              // focused: accent bar on the sidebar edge; running: small dot
+              Rectangle {
+                visible: row.focused && root.setting("apps", "indicator") === "bar"
+                width: 3; height: 18; radius: 2
+                anchors.verticalCenter: parent.verticalCenter
+                x: 0
+                color: root.urgent
+              }
+              Rectangle {
+                readonly property bool allHidden: row.windows.every(function(t) { return root.isMinimized(t) })
+                visible: row.running && (!row.focused || root.setting("apps", "indicator") === "dot") && root.setting("apps", "indicator") !== "none"
+                width: 5; height: 5; radius: 2.5
+                anchors.verticalCenter: parent.verticalCenter
+                x: 0
+                color: allHidden ? "transparent" : root.dim
+                border.width: allHidden ? 1 : 0
+                border.color: root.dim
+              }
+              RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 14
+                anchors.rightMargin: 8
+                spacing: 10
+                ColumnLayout {
+                  Layout.fillWidth: true
+                  spacing: 0
+                  Text {
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    text: root.displayName(row.modelData)
+                    color: row.running ? root.foreground : root.dim
+                    font.family: root.fontFamily; font.pixelSize: 12; font.bold: row.focused
+                    elide: Text.ElideRight
+                  }
+                }
+                // several windows: a count that opens the window list
+                Rectangle {
+                  visible: row.multi
+                  Layout.preferredWidth: countText.implicitWidth + 12
+                  Layout.preferredHeight: 20
+                  radius: 4
+                  color: countMouse.containsMouse || row.expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
+                  Text {
+                    id: countText
+                    anchors.centerIn: parent
+                    textFormat: Text.PlainText
+                    text: (row.expanded ? "▾ " : "▸ ") + row.windows.length
+                    color: row.expanded ? root.foreground : root.dim
+                    font.family: root.fontFamily; font.pixelSize: 10
+                  }
+                  MouseArea {
+                    id: countMouse
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleExpanded(row.modelData.key)
+                  }
+                }
+              }
+              MouseArea {
+                id: rowMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                cursorShape: dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                preventStealing: true
+                z: -1
+                property real pressX: 0
+                property real pressY: 0
+                property bool dragging: false
+                property bool dragged: false
+                onPressed: function(mouse) { pressX = mouse.x; pressY = mouse.y; dragged = false }
+                onPositionChanged: function(mouse) {
+                  if (!(pressedButtons & Qt.LeftButton) || !row.modelData || row.modelData.separator) return
+                  var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                  if (!dragging && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
+                    dragging = true; dragged = true
+                    win.beginDrag(row.modelData)
+                  }
+                  if (dragging) win.updateDrag(p.x, p.y)
+                }
+                onReleased: function(mouse) {
+                  if (!dragging) return
+                  dragging = false
+                  var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                  win.endDrag(p.x, p.y)
+                }
+                onCanceled: if (dragging) { dragging = false; win.dragItem = null }
+                onClicked: function(mouse) {
+                  if (dragged) { dragged = false; return }
+                  if (mouse.button === Qt.RightButton) win.openAppMenu(row.modelData, row)
+                  else if (mouse.button === Qt.MiddleButton) { var nl = root.launchCommandFor(row.modelData); if (nl) root.run(nl) }
+                  else root.activateApp(row.modelData, root.shiftHeld || (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                }
+              }
+            }
+
+            // the app's windows, when expanded
+            Column {
+              visible: row.expanded
+              x: 0
+              y: root.rowH + 2
+              width: parent.width
+              spacing: 2
+              Repeater {
+                model: row.expanded ? row.windows : []
+                Item {
+                  id: wrow
+                  required property var modelData
+                  readonly property bool hidden: root.isMinimized(modelData)
+                  readonly property bool front: !hidden && modelData.activated
+                  width: parent.width
+                  height: 28
+                  Rectangle {
+                    anchors.fill: parent
+                    anchors.leftMargin: 14
+                    radius: 5
+                    color: win.springKey === "w:" + root.addrOf(wrow.modelData) ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
+                         : wrow.front ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+                         : (wMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+                  }
+                  // same indicators as apps: bar = in front, dot = open, ring = minimized
+                  Rectangle {
+                    visible: wrow.front
+                    x: 14; width: 2; height: 14; radius: 1
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: root.urgent
+                  }
+                  Rectangle {
+                    visible: !wrow.front
+                    x: 15; width: 4; height: 4; radius: 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: wrow.hidden ? "transparent" : root.dim
+                    border.width: wrow.hidden ? 1 : 0
+                    border.color: root.dim
+                  }
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 26
+                    width: parent.width - 34
+                    textFormat: Text.PlainText
+                    text: String(wrow.modelData.title || "Window")
+                    color: wrow.hidden ? root.dim : root.foreground
+                    font.family: root.fontFamily; font.pixelSize: 11; font.bold: wrow.front
+                    elide: Text.ElideRight
+                  }
+                  MouseArea {
+                    id: wMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                    cursorShape: wdragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                    preventStealing: true
+                    property real pressX: 0
+                    property real pressY: 0
+                    property bool wdragging: false
+                    property bool wdragged: false
+                    onPressed: function(mouse) { pressX = mouse.x; pressY = mouse.y; wdragged = false }
+                    onPositionChanged: function(mouse) {
+                      if (!(pressedButtons & Qt.LeftButton)) return
+                      var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                      if (!wdragging && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
+                        wdragging = true; wdragged = true
+                        win.beginDrag(root.windowDragItem(row.modelData, wrow.modelData))
+                      }
+                      if (wdragging) win.updateDrag(p.x, p.y)
+                    }
+                    onReleased: function(mouse) {
+                      if (!wdragging) return
+                      wdragging = false
+                      var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                      win.endDrag(p.x, p.y)
+                    }
+                    onCanceled: if (wdragging) { wdragging = false; win.dragItem = null }
+                    onClicked: function(mouse) {
+                      if (wdragged) { wdragged = false; return }
+                      if (mouse.button === Qt.MiddleButton) root.closeWindow(wrow.modelData)
+                      else root.activateWindow(wrow.modelData, root.shiftHeld || (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // -- a plugin's panel, docked in the sidebar (opens above the bottom row) --
+        ColumnLayout {
+          id: dockCol
+          visible: root.dockedPanel !== null && root.dockMonitor === win.monitorName
+          Layout.fillWidth: true
+          spacing: 4
+
+          Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; Layout.bottomMargin: 4; color: root.faint }
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 26
+            Text { Layout.fillWidth: true; Layout.leftMargin: 6; textFormat: Text.PlainText; text: root.dockedName; elide: Text.ElideRight
+              color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+            Text {
+              visible: root.pluginEntries.some(function(e) { return e.id === root.dockedId })
+              textFormat: Text.PlainText; text: "Hide"; color: dockHideMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 10
+              MouseArea {
+                id: dockHideMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: { var id = root.dockedId; root.closeDockedPanel(); root.setHidden(id, true) }
+              }
+            }
+            Text {
+              Layout.leftMargin: 8
+              Layout.rightMargin: 6
+              textFormat: Text.PlainText; text: "✕"; color: dockCloseMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11
+              MouseArea { id: dockCloseMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.closeDockedPanel() }
+            }
+          }
+          Flickable {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(root.dockHeight, win.height * 0.6)
+            contentWidth: width
+            contentHeight: root.dockHeight
+            clip: true
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            Item {
+              id: dockBody
+              width: parent.width
+              height: root.dockHeight
+              Component.onCompleted: root.registerDockBody(win.monitorName, dockBody)
+            }
+          }
+        }
+
+        // -- tray icon menu (opens above the bottom row, like settings) ---------
+        ColumnLayout {
+          id: trayPanel
+          visible: win.trayHere
+          Layout.fillWidth: true
+          spacing: 2
+
+          Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; Layout.bottomMargin: 4; color: root.faint }
+
+          // header: app name (or submenu with a back arrow) and a close button
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 30
+            spacing: 8
+            Item {
+              Layout.fillWidth: true
+              Layout.preferredHeight: 30
+              RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 6
+                spacing: 8
+                IconImage { visible: !root.trayMenuSub; Layout.preferredWidth: 14; Layout.preferredHeight: 14; source: root.trayMenuItem ? root.trayMenuItem.icon : "" }
+                Text {
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
+                  text: root.trayMenuSub ? "‹ " + String(root.trayMenuSub.text || "").replace(/_/g, "")
+                        : (root.trayMenuItem ? String(root.trayMenuItem.tooltipTitle || root.trayMenuItem.title || root.trayMenuItem.id) : "")
+                  color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true
+                }
+              }
+              MouseArea { anchors.fill: parent; enabled: !!root.trayMenuSub; cursorShape: Qt.PointingHandCursor; onClicked: root.trayMenuSub = null }
+            }
+            Text {
+              textFormat: Text.PlainText; text: "✕"; color: trayCloseMouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 11
+              Layout.rightMargin: 6
+              MouseArea { id: trayCloseMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.closeTrayMenu() }
+            }
+          }
+
+          Rectangle {
+            visible: !root.trayMenuSub && !!root.trayMenuItem && !root.trayMenuItem.onlyMenu
+            Layout.fillWidth: true
+            Layout.preferredHeight: visible ? 30 : 0
+            radius: 6
+            color: openMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              x: 6
+              textFormat: Text.PlainText
+              text: "Open " + (root.trayMenuItem ? String(root.trayMenuItem.tooltipTitle || root.trayMenuItem.title || root.trayMenuItem.id) : "")
+              color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12
+            }
+            MouseArea {
+              id: openMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: { var it = root.trayMenuItem; root.closeTrayMenu(); if (it) it.activate() }
+            }
+          }
+          Rectangle { visible: !root.trayMenuSub && !!root.trayMenuItem && !root.trayMenuItem.onlyMenu; Layout.fillWidth: true; Layout.leftMargin: 6; Layout.rightMargin: 6; Layout.preferredHeight: 1; color: root.faint }
+
+          ListView {
+            id: trayList
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(contentHeight, win.height * 0.5)
+            clip: true
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
+            model: win.trayEntries
+            delegate: Item {
+              id: tRow
+              required property var modelData
+              readonly property bool sep: !!modelData.isSeparator
+              readonly property bool checkable: modelData.buttonType !== undefined && modelData.buttonType !== QsMenuButtonType.None
+              width: trayList.width
+              height: sep ? 9 : 30
+              Rectangle { visible: tRow.sep; anchors.centerIn: parent; width: parent.width - 12; height: 1; color: root.faint }
+              Rectangle {
+                visible: !tRow.sep
+                anchors.fill: parent
+                radius: 6
+                color: tMouse.containsMouse && tRow.modelData.enabled ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+                opacity: tRow.modelData.enabled ? 1 : 0.4
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.leftMargin: 6
+                  anchors.rightMargin: 6
+                  spacing: 8
+                  Text { visible: tRow.checkable; Layout.preferredWidth: 10; textFormat: Text.PlainText; text: tRow.modelData.checkState === Qt.Checked ? "✓" : ""; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+                  IconImage { visible: !!tRow.modelData.icon; Layout.preferredWidth: 14; Layout.preferredHeight: 14; source: tRow.modelData.icon || "" }
+                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: String(tRow.modelData.text || "").replace(/_/g, ""); color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; elide: Text.ElideRight }
+                  Text { visible: tRow.modelData.hasChildren; textFormat: Text.PlainText; text: "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+                }
+                MouseArea {
+                  id: tMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  enabled: tRow.modelData.enabled
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var entry = tRow.modelData
+                    if (entry.hasChildren) { root.trayMenuSub = entry; return }
+                    entry.triggered()
+                    Qt.callLater(root.closeTrayMenu)
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // -- settings (opens above the gear) -------------------------------------
+        component SectionHeader: Rectangle {
+          id: sh
+          property string sectionId: ""
+          property string icon: ""
+          property string label: ""
+          property string status: ""
+          readonly property bool expanded: root.qsSection === sectionId
+          Layout.fillWidth: true
+          implicitHeight: 34
+          radius: 6
+          color: shMouse.containsMouse && !expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 6
+            anchors.rightMargin: 6
+            spacing: 10
+            Text { Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: sh.icon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: sh.expanded }
+            Text { textFormat: Text.PlainText; text: sh.status; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 110 }
+            Text { textFormat: Text.PlainText; text: sh.expanded ? "˅" : "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+          }
+          MouseArea { id: shMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleSection(sh.sectionId) }
+        }
+        component SwitchRow: Item {
+          id: sw
+          property string label: ""
+          property string hint: ""
+          property bool on: false
+          signal toggled()
+          Layout.fillWidth: true
+          implicitHeight: 28
+          RowLayout {
+            anchors.fill: parent
+            spacing: 8
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sw.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
+            Text { visible: sw.hint !== ""; textFormat: Text.PlainText; text: sw.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+            Rectangle {
+              Layout.preferredWidth: 30; Layout.preferredHeight: 16; radius: 8
+              color: sw.on ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+              Rectangle { width: 12; height: 12; radius: 6; anchors.verticalCenter: parent.verticalCenter; x: sw.on ? parent.width - width - 2 : 2
+                color: sw.on ? root.background : root.dim
+                Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } } }
+            }
+          }
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sw.toggled() }
+        }
+        component SliderRow: Item {
+          id: sl
+          property string label: ""
+          property real value: 0
+          property bool muted: false
+          signal moved(real v)
+          signal muteClicked()
+          Layout.fillWidth: true
+          implicitHeight: 24
+          RowLayout {
+            anchors.fill: parent
+            spacing: 8
+            Text { Layout.preferredWidth: 26; textFormat: Text.PlainText; text: sl.label; color: sl.muted ? root.urgent : root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+              MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: Qt.PointingHandCursor; onClicked: sl.muteClicked() } }
+            Item {
+              id: track
+              Layout.fillWidth: true
+              Layout.preferredHeight: 18
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 4; radius: 2; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16) }
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * Math.max(0, Math.min(1, sl.value)); height: 4; radius: 2; color: sl.muted ? root.dim : root.foreground }
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; x: parent.width * Math.max(0, Math.min(1, sl.value)) - 6; width: 12; height: 12; radius: 6; color: sl.muted ? root.dim : root.foreground }
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                preventStealing: true
+                onPressed: function(m) { sl.moved(Math.max(0, Math.min(1, m.x / width))) }
+                onPositionChanged: function(m) { if (pressed) sl.moved(Math.max(0, Math.min(1, m.x / width))) }
+                onWheel: function(w) { sl.moved(Math.max(0, Math.min(1, sl.value + (w.angleDelta.y > 0 ? 0.05 : -0.05)))) }
+              }
+            }
+            Text { Layout.preferredWidth: 30; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : Math.round(sl.value * 100) + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+          }
+        }
+        component ChoiceRow: Rectangle {
+          id: ch
+          property string label: ""
+          property string hint: ""
+          property bool selected: false
+          signal chosen()
+          Layout.fillWidth: true
+          implicitHeight: 26
+          radius: 5
+          color: selected ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : (chMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+          RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            spacing: 8
+            Rectangle { Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: ch.selected ? root.foreground : "transparent"; border.width: ch.selected ? 0 : 1; border.color: root.dim }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
+            Text { visible: ch.hint !== ""; textFormat: Text.PlainText; text: ch.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+          }
+          MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.chosen() }
+        }
+        component LinkRow: Item {
+          id: lk
+          property string label: ""
+          signal activated()
+          Layout.fillWidth: true
+          implicitHeight: 24
+          Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: lk.label + " ›"; color: lkMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+          MouseArea { id: lkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: lk.activated() }
+        }
+        component SectionBody: Rectangle {
+          default property alias content: bodyColumn.data
+          Layout.fillWidth: true
+          implicitHeight: bodyColumn.implicitHeight + 20
+          radius: 8
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+          ColumnLayout { id: bodyColumn; anchors.fill: parent; anchors.margins: 10; spacing: 6 }
+        }
+
+        ColumnLayout {
+          id: settingsPanel
+          visible: win.qsHere
+          Layout.fillWidth: true
+          spacing: 2
+
+          Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; Layout.bottomMargin: 4; color: root.faint }
+
+          ColumnLayout {
+            id: accordion
+            visible: root.qsPage === ""
+            Layout.fillWidth: true
+            spacing: 2
+
+            // Network
+            SectionHeader { sectionId: "network"; icon: ""; label: "Network"
+              status: root.qsState.netType === "wifi" ? root.qsState.netName : root.qsState.netType === "ethernet" ? "Ethernet" : root.qsState.netType ? root.qsState.netType : "Offline" }
+            SectionBody {
+              visible: root.qsSection === "network"
+              SwitchRow { label: "Wi-Fi"; on: root.qsState.wifi; onToggled: root.qsToggle("wifi") }
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+                text: root.qsState.netName ? "Connected: " + root.qsState.netName : "Not connected" }
+              LinkRow { label: "Networks & DNS"; onActivated: root.qsPage = "network" }
+            }
+
+            // Bluetooth
+            SectionHeader { sectionId: "bluetooth"; icon: ""; label: "Bluetooth"
+              status: !root.btAdapter || !root.btAdapter.enabled ? "Off" : (function() { var n = root.btDevices.filter(function(d) { return d.connected }).length; return n > 0 ? n + " connected" : "On" })() }
+            SectionBody {
+              visible: root.qsSection === "bluetooth"
+              SwitchRow { label: "Bluetooth"; on: !!root.btAdapter && root.btAdapter.enabled; onToggled: root.qsToggle("bt") }
+              Repeater {
+                model: root.btAdapter && root.btAdapter.enabled ? root.btDevices : []
+                ChoiceRow {
+                  required property var modelData
+                  label: String(modelData.name || modelData.deviceName || modelData.address)
+                  hint: modelData.connected ? (modelData.batteryAvailable ? Math.round(modelData.battery * 100) + "%" : "connected") : ""
+                  selected: modelData.connected
+                  onChosen: root.btToggleDevice(modelData)
+                }
+              }
+              LinkRow { label: "Devices & pairing"; onActivated: root.qsPage = "bluetooth" }
+            }
+
+            // Sound
+            SectionHeader { sectionId: "sound"; icon: ""; label: "Sound"
+              status: root.sink && root.sink.audio ? (root.sink.audio.muted ? "Muted" : Math.round(root.sink.audio.volume * 100) + "%") : "" }
+            SectionBody {
+              visible: root.qsSection === "sound"
+              SliderRow { label: "OUT"; value: root.sink && root.sink.audio ? root.sink.audio.volume : 0; muted: !!root.sink && !!root.sink.audio && root.sink.audio.muted
+                onMoved: function(v) { if (root.sink && root.sink.audio) root.sink.audio.volume = v }
+                onMuteClicked: if (root.sink && root.sink.audio) root.sink.audio.muted = !root.sink.audio.muted }
+              SliderRow { label: "MIC"; visible: !!root.source && !!root.source.audio; value: root.source && root.source.audio ? root.source.audio.volume : 0; muted: !!root.source && !!root.source.audio && root.source.audio.muted
+                onMoved: function(v) { if (root.source && root.source.audio) root.source.audio.volume = v }
+                onMuteClicked: if (root.source && root.source.audio) root.source.audio.muted = !root.source.audio.muted }
+              Repeater {
+                model: root.sinkNodes
+                ChoiceRow {
+                  required property var modelData
+                  label: root.nodeName(modelData)
+                  selected: !!root.sink && root.sink.id === modelData.id
+                  onChosen: root.setSink(modelData)
+                }
+              }
+              LinkRow { label: "Inputs & app volumes"; onActivated: root.qsPage = "audio" }
+            }
+
+            // Display
+            SectionHeader { sectionId: "display"; icon: ""; label: "Display"
+            status: root.refreshRate > 0 ? root.resLabel(root.modeRes) + " · " + Math.round(root.refreshRate) + " Hz" : (root.qsState.night ? "Night on" : "Night off") }
+            SectionBody {
+              visible: root.qsSection === "display"
+              SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
+              LinkRow { label: "Brightness, scale & text"; onActivated: root.qsPage = "display" }
+              LinkRow { label: "Theme & background"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("appearance") } }
+            }
+
+            // Notifications
+            SectionHeader { sectionId: "notifications"; icon: ""; label: "Notifications"; status: root.qsState.dnd ? "Silenced" : "On" }
+            SectionBody {
+              visible: root.qsSection === "notifications"
+              SwitchRow { label: "Do not disturb"; on: root.qsState.dnd; onToggled: root.qsToggle("dnd") }
+            }
+
+            // Sidebar: which plugin widgets and tray icons show in the bottom row
+            SectionHeader { sectionId: "sidebar"; icon: "\uf0db"; label: "Sidebar"
+              status: root.hiddenNow.length > 0 ? root.hiddenNow.length + " hidden" : "" }
+            SectionBody {
+              visible: root.qsSection === "sidebar"
+              Caption { text: "PLUGINS"; visible: root.pluginEntries.length > 0 }
+              Repeater {
+                model: root.pluginEntries
+                SwitchRow {
+                  required property var modelData
+                  label: (function() {
+                    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                    var meta = w && w[modelData.id] ? w[modelData.id].metadata || {} : {}
+                    return String(meta.displayName || (meta.barWidget && meta.barWidget.displayName) || modelData.id)
+                  })()
+                  on: !root.isHidden(modelData.id)
+                  onToggled: root.setHidden(modelData.id, !root.isHidden(modelData.id))
+                }
+              }
+              Caption { text: "TRAY ICONS"; visible: SystemTray.items.values.length > 0 }
+              Repeater {
+                model: SystemTray.items
+                SwitchRow {
+                  required property var modelData
+                  label: root.trayLabel(modelData)
+                  on: !root.isHidden("tray:" + modelData.id)
+                  onToggled: root.setHidden("tray:" + modelData.id, !root.isHidden("tray:" + modelData.id))
+                }
+              }
+            }
+
+            // Power
+            SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) }
+            SectionBody {
+              visible: root.qsSection === "power"
+              RowLayout {
+                Layout.fillWidth: true
+                visible: root.qsState.profile !== ""
+                spacing: 4
+                Repeater {
+                  model: [["power-saver", "Saver"], ["balanced", "Balanced"], ["performance", "Perform."]]
+                  Rectangle {
+                    required property var modelData
+                    readonly property bool sel: root.qsState.profile === modelData[0]
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 26
+                    radius: 5
+                    color: sel ? root.foreground : (pMouse.containsMouse ? root.faint : "transparent")
+                    border.width: sel ? 0 : 1
+                    border.color: root.faint
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
+                    MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setProfile(modelData[0]) }
+                  }
+                }
+              }
+              SwitchRow { label: "Stay awake"; on: root.qsState.idle; onToggled: root.qsToggle("idle") }
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Repeater {
+                  model: [["", "Lock", "omarchy-system-lock"], ["", "Sleep", "systemctl suspend"], ["", "Logout", "omarchy-system logout"],
+                          ["", "Reboot", "omarchy-system reboot"], ["", "Off", "omarchy-system shutdown"]]
+                  Rectangle {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 40
+                    radius: 6
+                    color: sMouse.containsMouse ? root.faint : "transparent"
+                    Column {
+                      anchors.centerIn: parent
+                      spacing: 2
+                      Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
+                      Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
+                    }
+                    MouseArea { id: sMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.systemAction(modelData[2]) }
+                  }
+                }
+              }
+            }
+          }
+
+          // ---- detail pages ----------------------------------------------------
+          component PageHeader: Rectangle {
+            id: ph
+            property string title: ""
+            Layout.fillWidth: true
+            implicitHeight: 32
+            radius: 6
+            color: phMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+            Text { anchors.verticalCenter: parent.verticalCenter; x: 6; textFormat: Text.PlainText; text: "‹  " + ph.title; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+            MouseArea { id: phMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsPage = "" }
+          }
+          component Caption: Text {
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+            textFormat: Text.PlainText
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+          }
+          component Segmented: RowLayout {
+            id: seg
+            property var options: []      // [[value, label], ...]
+            property string current: ""
+            signal picked(string value)
+            Layout.fillWidth: true
+            spacing: 4
+            Repeater {
+              model: seg.options
+              Rectangle {
+                required property var modelData
+                readonly property bool sel: seg.current === modelData[0]
+                Layout.fillWidth: true
+                Layout.preferredHeight: 26
+                radius: 5
+                color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
+                border.width: sel ? 0 : 1
+                border.color: root.faint
+                Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
+                MouseArea { id: sgMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
+              }
+            }
+          }
+
+          // Network page
+          ColumnLayout {
+            visible: root.qsPage === "network"
+            Layout.fillWidth: true
+            spacing: 4
+            PageHeader { title: "Network" }
+            SectionBody {
+              SwitchRow { label: "Wi-Fi"; on: root.qsState.wifi; onToggled: root.qsToggle("wifi") }
+              Caption { text: root.wifiDevice ? "WI-FI NETWORKS" : "NO WI-FI ADAPTER"; visible: true }
+              ListView {
+                id: wifiList
+                visible: !!root.wifiDevice && root.qsState.wifi
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(contentHeight, win.height * 0.3)
+                clip: true
+                interactive: contentHeight > height
+                boundsBehavior: Flickable.StopAtBounds
+                model: root.wifiNetworks
+                delegate: ColumnLayout {
+                  id: wrow
+                  required property var modelData
+                  width: wifiList.width
+                  spacing: 2
+                  ChoiceRow {
+                    label: wrow.modelData.name
+                    hint: (root.secured(wrow.modelData) ? "🔒︎ " : "") + root.bars(wrow.modelData)
+                    selected: wrow.modelData.connected
+                    onChosen: root.wifiClick(wrow.modelData)
+                  }
+                  Rectangle {
+                    visible: root.pwSsid === wrow.modelData.name
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 28
+                    radius: 5
+                    color: "transparent"
+                    border.width: 1
+                    border.color: root.dim
+                    TextInput {
+                      id: pwInput
+                      anchors.fill: parent
+                      anchors.leftMargin: 8
+                      anchors.rightMargin: 8
+                      verticalAlignment: TextInput.AlignVCenter
+                      echoMode: TextInput.Password
+                      color: root.foreground
+                      font.family: root.fontFamily; font.pixelSize: 11
+                      clip: true
+                      onVisibleChanged: if (visible) { text = ""; Qt.callLater(function() { pwInput.forceActiveFocus() }) }
+                      Keys.onReturnPressed: root.wifiConnectWithPassword(text)
+                      Keys.onEnterPressed: root.wifiConnectWithPassword(text)
+                      Keys.onEscapePressed: root.pwSsid = ""
+                      Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "Password, then Enter"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                    }
+                  }
+                }
+              }
+              Caption { text: "DNS" }
+              Segmented {
+                options: [["DHCP", "DHCP"], ["Cloudflare", "Cloudflare"], ["Google", "Google"]]
+                current: root.dnsProvider
+                onPicked: function(v) { root.setDns(v) }
+              }
+            }
+          }
+
+          // Bluetooth page
+          ColumnLayout {
+            visible: root.qsPage === "bluetooth"
+            Layout.fillWidth: true
+            spacing: 4
+            PageHeader { title: "Bluetooth" }
+            SectionBody {
+              SwitchRow { label: "Bluetooth"; on: !!root.btAdapter && root.btAdapter.enabled; onToggled: root.qsToggle("bt") }
+              Caption { text: "MY DEVICES"; visible: root.btDevices.length > 0 }
+              Repeater {
+                model: root.btDevices
+                RowLayout {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  spacing: 4
+                  ChoiceRow {
+                    label: String(modelData.name || modelData.deviceName || modelData.address)
+                    hint: modelData.connected ? "connected" : ""
+                    selected: modelData.connected
+                    onChosen: root.btToggleDevice(modelData)
+                  }
+                  Text {
+                    textFormat: Text.PlainText; text: "forget"; color: fgMouse.containsMouse ? root.urgent : root.dim
+                    font.family: root.fontFamily; font.pixelSize: 9
+                    MouseArea { id: fgMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.btForget(modelData) }
+                  }
+                }
+              }
+              Caption { text: root.btAdapter && root.btAdapter.discovering ? "NEARBY · SCANNING…" : "NEARBY" }
+              Text {
+                visible: root.btNearby.length === 0
+                textFormat: Text.PlainText; text: root.btAdapter && root.btAdapter.enabled ? "Looking for devices…" : "Turn Bluetooth on to scan"
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+              }
+              Repeater {
+                model: root.btNearby
+                ChoiceRow {
+                  required property var modelData
+                  label: String(modelData.name || modelData.deviceName)
+                  hint: "pair"
+                  onChosen: root.btPair(modelData)
+                }
+              }
+            }
+          }
+
+          // Audio page
+          ColumnLayout {
+            visible: root.qsPage === "audio"
+            Layout.fillWidth: true
+            spacing: 4
+            PageHeader { title: "Sound" }
+            SectionBody {
+              Caption { text: "OUTPUT" }
+              Repeater {
+                model: root.sinkNodes
+                ChoiceRow { required property var modelData; label: root.nodeName(modelData); selected: !!root.sink && root.sink.id === modelData.id; onChosen: root.setSink(modelData) }
+              }
+              Caption { text: "INPUT"; visible: root.sourceNodes.length > 0 }
+              Repeater {
+                model: root.sourceNodes
+                ChoiceRow { required property var modelData; label: root.nodeName(modelData); selected: !!root.source && root.source.id === modelData.id; onChosen: root.setSource(modelData) }
+              }
+              Caption { text: "APPS" }
+              Text { visible: root.streamNodes.length === 0; textFormat: Text.PlainText; text: "Nothing is playing"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Repeater {
+                model: root.streamNodes
+                ColumnLayout {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  spacing: 0
+                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.streamName(modelData); color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight }
+                  SliderRow {
+                    label: ""
+                    value: modelData.audio ? modelData.audio.volume : 0
+                    muted: !!modelData.audio && modelData.audio.muted
+                    onMoved: function(v) { if (modelData.audio) modelData.audio.volume = v }
+                    onMuteClicked: if (modelData.audio) modelData.audio.muted = !modelData.audio.muted
+                  }
+                }
+              }
+            }
+          }
+
+          // Display page
+          ColumnLayout {
+            visible: root.qsPage === "display"
+            Layout.fillWidth: true
+            spacing: 4
+            PageHeader { title: "Display" }
+            SectionBody {
+              Caption { text: "BRIGHTNESS"; visible: root.brightness >= 0 }
+              SliderRow { visible: root.brightness >= 0; label: ""; value: Math.max(0, root.brightness) / 100; onMoved: function(v) { root.setBrightness(v) } }
+              Caption { text: "RESOLUTION" + (root.modeSize ? " · " + root.modeSize : ""); visible: root.resolutionOptions.length > 1 }
+              Segmented {
+                visible: root.resolutionOptions.length > 1
+                options: root.resolutionOptions
+                current: root.modeRes
+                onPicked: function(v) { root.setResolution(v) }
+              }
+              Caption { text: "REFRESH RATE" + (root.resolutionOptions.length > 1 ? "" : (root.modeSize ? " · " + root.modeSize : "")); visible: root.refreshOptions.length > 0 }
+              Segmented {
+                visible: root.refreshOptions.length > 0
+                options: root.refreshOptions
+                current: root.refreshCurrent
+                onPicked: function(v) { root.setRefresh(v) }
+              }
+              Caption { text: "SCALE" }
+              Segmented {
+                options: [["1", "1×"], ["1.25", "1.25×"], ["1.6", "1.6×"], ["2", "2×"]]
+                current: root.displayScale
+                onPicked: function(v) { root.setScale(v) }
+              }
+              Caption { text: "TEXT SIZE" }
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Repeater {
+                  model: [["−", -1], ["+", 1]]
+                  Rectangle {
+                    required property var modelData
+                    Layout.preferredWidth: 30; Layout.preferredHeight: 26; radius: 5
+                    color: tsMouse.containsMouse ? root.faint : "transparent"
+                    border.width: 1; border.color: root.faint
+                    Text { anchors.centerIn: parent; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
+                    MouseArea { id: tsMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setTextPx(root.textPx + modelData[1]) }
+                  }
+                }
+                Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.textPx + " px"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+              }
+              SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
+            }
+          }
+
+          LinkRow { visible: root.qsPage === ""; Layout.leftMargin: 6; Layout.topMargin: 4; label: "Edit sidebar"; onActivated: root.startEditing(win.monitorName) }
+          LinkRow { visible: root.qsPage === ""; Layout.leftMargin: 6; label: "All settings"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup") } }
+        }
+
+        Rectangle { id: bottomSep; Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
+
+        // -- bottom row: quick settings (left), system tray (right) -------------
+        Item {
+          id: secBottom
+          Layout.fillWidth: true
+          Layout.preferredHeight: 28
+
+          Flow {
+            // Omarchy's widgets, kept loaded but hidden so their full panels
+            // (and Super+Ctrl+A/B/D) open from here, beside the sidebar.
+            anchors.fill: parent
+            opacity: 0
+            enabled: false
+            spacing: 2
+          Repeater {
+            model: root.widgetIds
+            Loader {
+              id: host
+              required property var modelData
+              readonly property string moduleName: String(modelData)
+              readonly property var registryEntry: {
+                var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                return w ? w[moduleName] || null : null
+              }
+              active: !!registryEntry && !!registryEntry.component
+              sourceComponent: registryEntry ? registryEntry.component : null
+              readonly property bool shown: !!item && item.visible && (item.implicitWidth || 0) > 0 && (item.implicitHeight || 0) > 0
+              width: shown ? Math.max(Style.bar.sizeVertical, item.implicitWidth) : 0
+              height: shown ? Math.max(Style.bar.sizeVertical, item.implicitHeight) : 0
+
+              function inject() {
+                if (!item) return
+                if ("fixedEdge" in item) item.fixedEdge = "start"
+                if ("bar" in item) item.bar = widgetBar
+                if ("moduleName" in item) item.moduleName = host.moduleName
+                if ("settings" in item) {
+                  var meta = registryEntry && registryEntry.metadata ? registryEntry.metadata : {}
+                  var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+                  item.settings = JSON.parse(JSON.stringify(defs))
+                }
+              }
+              onLoaded: {
+                inject()
+                Qt.callLater(inject)
+                root.hostedItems = root.hostedItems.concat([host])
+              }
+              Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== host })
+            }
+          }
+        }
+
+          RowLayout {
+            anchors.fill: parent
+            spacing: 6
+            Rectangle {
+              Layout.preferredWidth: 28
+              Layout.preferredHeight: 28
+              radius: 6
+              color: win.qsHere ? root.faint : (gearMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "\uf013"; color: win.qsHere ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 14 }
+              MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
+            }
+            Item { Layout.fillWidth: true }
+            // plugin widgets and tray icons share one row of equal cells
+            Row {
+              spacing: 4
+              Repeater {
+                model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) })
+                Item {
+                  id: pcell
+                  required property var modelData
+                  // one 28px cell like the tray icons (wider only if the widget shows text)
+                  width: phost.shown ? Math.max(28, phost.width * phost.scale) : 0
+                  height: 28
+                Loader {
+                  id: phost
+                  anchors.centerIn: parent
+                  // Bar widgets draw icons at Omarchy's bar size; scale them up to
+                  // the tray icons' 16px so the row reads as one size.
+                  scale: 16 / Math.max(1, Style.bar.iconSize)
+                  readonly property var modelData: pcell.modelData
+                  readonly property string moduleName: String(modelData.id)
+                  readonly property var registryEntry: {
+                    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                    return w ? w[moduleName] || null : null
+                  }
+                  active: !!registryEntry && !!registryEntry.component
+                  sourceComponent: registryEntry ? registryEntry.component : null
+                  // (not item.visible: that follows this cell's own visibility)
+                  readonly property bool shown: !!item && (item.implicitWidth || 0) > 0
+                  width: shown ? item.implicitWidth : 0
+                  height: shown ? Math.min(28, Math.max(16, item.implicitHeight || 28)) : 0
+                  function inject() {
+                    if (!item) return
+                    if ("fixedEdge" in item) item.fixedEdge = "end"
+                    if ("bar" in item) item.bar = widgetBar
+                    if ("moduleName" in item) item.moduleName = phost.moduleName
+                    if ("settings" in item) {
+                      var meta = registryEntry && registryEntry.metadata ? registryEntry.metadata : {}
+                      var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+                      var merged = JSON.parse(JSON.stringify(defs))
+                      for (var k in phost.modelData) if (k !== "id") merged[k] = phost.modelData[k]
+                      item.settings = merged
+                    }
+                  }
+                  onLoaded: {
+                    inject()
+                    Qt.callLater(inject)
+                    root.hostedItems = root.hostedItems.concat([phost])
+                  }
+                  onModelDataChanged: inject()
+                  Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== phost })
+                }
+                }
+              }
+              Repeater {
+                model: root.setting("bottom", "tray") ? root.trayItemsShown : []
+                Item {
+                  id: trayItem
+                  required property var modelData
+                  width: 28; height: 28
+                  IconImage {
+                    anchors.centerIn: parent
+                    width: 16; height: 16
+                    source: trayItem.modelData.icon
+                  }
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                    onEntered: tooltip.show(trayItem, trayItem.modelData.tooltipTitle || trayItem.modelData.title || trayItem.modelData.id)
+                    onExited: tooltip.hide(trayItem)
+                    onClicked: function(mouse) {
+                      var item = trayItem.modelData
+                      if (mouse.button === Qt.MiddleButton) { root.closeTrayMenu(); item.activate() }
+                      else if (item.hasMenu) {
+                        if (root.trayMenuItem === item) root.closeTrayMenu()
+                        else root.openTrayMenu(item, win.monitorName)
+                      } else { root.closeTrayMenu(); item.activate() }
+                    }
+                  }
+                }
+              }
+
+            }
+          }
+        }
+      }
+    }
+  }
+}

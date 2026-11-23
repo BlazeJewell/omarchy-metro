@@ -1,0 +1,1 @@
+/usr/share/omarchy/shell/plugins/menu/MenuModel.js
