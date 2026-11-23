@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install (or update) the jake.sidebar rice on an Omarchy machine.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
+#   gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar && ~/.config/omarchy/plugins/jake.sidebar/install.sh
 #   # or, from a checkout:
 #   ./install.sh [--keep-layout]
 #
@@ -15,7 +15,7 @@
 #   4. switches the bar to the sidebar and turns off Omarchy's dock
 set -euo pipefail
 
-REPO_URL="${JAKE_SIDEBAR_REPO:-REPO_URL_PLACEHOLDER}"
+REPO_URL="${JAKE_SIDEBAR_REPO:-https://github.com/BlazeJewell/omarchy-sidebar.git}"
 DEST="$HOME/.config/omarchy/plugins/jake.sidebar"
 HYPR="$HOME/.config/hypr"
 CFG="$HOME/.config/omarchy"

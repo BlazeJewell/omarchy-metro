@@ -10,16 +10,14 @@ Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 
 ## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
-```
-
-or, if you'd rather look first:
+The repo is private, so clone it with your GitHub login (`gh auth login` once per machine):
 
 ```bash
-git clone REPO_URL_PLACEHOLDER ~/.config/omarchy/plugins/jake.sidebar
+gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar
 ~/.config/omarchy/plugins/jake.sidebar/install.sh
 ```
+
+(`git clone https://github.com/BlazeJewell/omarchy-sidebar.git ~/.config/omarchy/plugins/jake.sidebar` works too.)
 
 The installer:
 
