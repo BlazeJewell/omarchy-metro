@@ -1873,7 +1873,11 @@ Item {
       readonly property string monitorName: monitor ? monitor.name : ""
 
       WlrLayershell.namespace: "omarchy-bar"
-      WlrLayershell.layer: WlrLayer.Top
+      // A fullscreen window (a game) covers the Top layer, so while the sidebar
+      // is in use over one (overview, search, settings, editor) lift it to Overlay.
+      readonly property bool fsHere: !!(monitor && monitor.activeWorkspace && monitor.activeWorkspace.hasFullscreen)
+      readonly property bool lifted: fsHere && win.keepOpen && win.dragItem === null
+      WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
       WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
@@ -2142,7 +2146,7 @@ Item {
         anchors { top: true; bottom: true; left: true; right: true }
         margins.left: root.sidebarWidth
         exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
         WlrLayershell.namespace: "jake-sidebar-search-dismiss"
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
         MouseArea {
@@ -3017,7 +3021,7 @@ Item {
         margins.left: root.sidebarWidth
         implicitWidth: 380
         exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: WlrLayer.Top
+        WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
         WlrLayershell.namespace: "jake-sidebar-editor"
         WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
