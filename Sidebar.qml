@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Services.SystemTray
 import Quickshell.Services.Pipewire
 import Quickshell.Services.Mpris
+import Quickshell.Services.UPower
 import Quickshell.Bluetooth
 import Quickshell.Networking
 import Quickshell.Wayland
@@ -222,6 +223,92 @@ Item {
     function showTooltip(target, text) { tooltip.show(target, text) }
     function hideTooltip(target) { tooltip.hide(target) }
   }
+  // The same, but horizontal: for the status row under the clock (indicators,
+  // update available, keyboard layout), which lays out like the top bar's.
+  QtObject {
+    id: statusBar
+    readonly property var shell: root.shell
+    readonly property color foreground: root.foreground
+    readonly property color barForeground: root.barForeground
+    readonly property color background: root.background
+    readonly property color urgent: root.urgent
+    readonly property string fontFamily: root.fontFamily
+    readonly property string position: "top"
+    readonly property bool vertical: false
+    readonly property int barSize: Style.bar.sizeHorizontal
+    readonly property int sizeHorizontal: Style.bar.sizeHorizontal
+    readonly property int iconSlot: Style.bar.iconSlot
+    readonly property int statusSlot: Style.bar.statusSlot
+    readonly property int iconSize: Style.bar.iconSize
+    readonly property int iconCanvas: Style.bar.iconCanvas
+    readonly property int iconFont: Style.bar.iconFont
+    readonly property bool transparent: false
+    readonly property bool barHidden: false
+    readonly property bool foregroundAnimationEnabled: true
+    readonly property bool centerSectionRevealHeld: false
+    readonly property bool centerHoverRevealSuppressed: false
+    readonly property bool traySectionDragActive: false
+    readonly property bool traySectionPopoutOpen: false
+    readonly property bool microphoneMuted: false
+    readonly property bool microphoneLive: false
+    readonly property bool microphoneInUse: false
+    readonly property int pendingUpdates: 0
+    readonly property var layoutConfig: ({ left: [], centerBegin: [], center: [], centerEnd: [], right: root.widgetIds.map(function(id) { return { id: id } }), tray: [] })
+    readonly property var activePopout: root.activePopout
+    readonly property var clickTargets: root.clickTargets
+
+    function barSizeFor(screenName) { return root.sidebarWidth }
+    function run(command) { root.run(command) }
+    function requestPopout(owner) { root.requestPopout(owner); Qt.callLater(root.dockOpenPanel); dockRetry.restart() }
+    function releasePopout(owner) { root.releasePopout(owner) }
+    function notePopoutCard(card) {}
+    function popoutCardFor(owner) { return null }
+    function switchPanelFrom(owner, direction) { return false }
+    function moduleWidgets(id) { return root.moduleWidgets(id) }
+    function registerClickTarget(target) {
+      if (target && root.clickTargets.indexOf(target) === -1) root.clickTargets = root.clickTargets.concat([target])
+    }
+    function unregisterClickTarget(target) {
+      root.clickTargets = root.clickTargets.filter(function(t) { return t !== target })
+    }
+    function targetBelongsToWindow(target, window) {
+      var w = target && target.QsWindow ? target.QsWindow.window : null
+      return !!w && !!window && (w === window || w.screen === window.screen)
+    }
+    function setCenterHoverRevealSuppressed(value) {}
+    function showTooltip(target, text) { tooltip.show(target, text) }
+    function hideTooltip(target) { tooltip.hide(target) }
+  }
+  // ---- status row, calendar and battery (what the stock top bar shows) ---------
+  readonly property var statusIds: ["omarchy.indicators", "omarchy.system-update", "omarchy.keyboard-layout"]
+  property bool calendarOpen: false
+  property bool clockAlt: false
+  property date calMonth: new Date()
+  function isoWeek(d) {
+    var t = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+    t.setDate(t.getDate() + 3 - (t.getDay() + 6) % 7)
+    var w1 = new Date(t.getFullYear(), 0, 4)
+    return 1 + Math.round(((t - w1) / 86400000 - 3 + (w1.getDay() + 6) % 7) / 7)
+  }
+  function calDays(month) {
+    var first = new Date(month.getFullYear(), month.getMonth(), 1)
+    var start = Qt.locale(Commons.I18n.formatLocale).firstDayOfWeek % 7
+    var off = (first.getDay() - start + 7) % 7
+    var out = []
+    for (var i = 0; i < 42; i++) out.push(new Date(month.getFullYear(), month.getMonth(), 1 - off + i))
+    return out
+  }
+  readonly property var battery: UPower.displayDevice
+  readonly property bool batteryPresent: !!(battery && battery.isPresent && battery.isLaptopBattery)
+  readonly property int batteryPct: batteryPresent ? Math.round(battery.percentage > 1 ? battery.percentage : battery.percentage * 100) : -1
+  readonly property bool batteryCharging: batteryPresent && !UPower.onBattery
+  function batteryGlyph() {
+    if (!batteryPresent) return ""
+    if (batteryCharging) return "\udb80\udc84"
+    var g = ["\udb80\udc8e", "\udb80\udc7a", "\udb80\udc7b", "\udb80\udc7c", "\udb80\udc7d", "\udb80\udc7e", "\udb80\udc7f", "\udb80\udc80", "\udb80\udc81", "\udb80\udc82", "\udb80\udc79"]
+    return g[Math.max(0, Math.min(10, Math.round(batteryPct / 10)))]
+  }
+
 
   // ---- system stats (one small poll every 2s) ----------------------------
   property real cpu: 0
@@ -1381,7 +1468,7 @@ Item {
   // Kept in ~/.config/omarchy/sidebar-settings.json; anything not set there
   // uses these defaults, which are how the sidebar looks out of the box.
   readonly property var settingsDefaults: ({
-    clock: { show: true, h24: true, date: true, seconds: false },
+    clock: { show: true, h24: true, date: true, seconds: false, status: true, calendar: true },
     system: { show: true, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, refresh: 2 },
     workspaces: { show: true, count: 5, style: "numbers", scroll: true },
     media: { show: false, idle: true },
@@ -2633,7 +2720,7 @@ Item {
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() {
         var blocks = {
-          clock: [secClock], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
+          clock: [secClock, secStatus, secCalendar], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
           apps: [menuList, appList], bottom: [dockCol, trayPanel, bottomSep, secBottom]
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
@@ -3104,6 +3191,8 @@ Item {
               OptRow { label: "Format"; options: [[true, "24h"], [false, "12h"]]; current: root.setting("clock", "h24"); onPicked: function(v) { root.setSetting("clock", "h24", v) } }
               OptRow { label: "Date"; options: parent.parent.onOff; current: root.setting("clock", "date"); onPicked: function(v) { root.setSetting("clock", "date", v) } }
               OptRow { label: "Seconds"; options: parent.parent.onOff; current: root.setting("clock", "seconds"); onPicked: function(v) { root.setSetting("clock", "seconds", v) } }
+              OptRow { label: "Status icons"; options: parent.parent.onOff; current: root.setting("clock", "status"); onPicked: function(v) { root.setSetting("clock", "status", v) } }
+              OptRow { label: "Calendar on click"; options: parent.parent.onOff; current: root.setting("clock", "calendar"); onPicked: function(v) { root.setSetting("clock", "calendar", v) } }
             }
             // SYSTEM
             ColumnLayout {
@@ -3367,11 +3456,149 @@ Item {
             Layout.alignment: Qt.AlignBottom
             Layout.bottomMargin: 5
             textFormat: Text.PlainText
-            text: Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "ddd d MMM").toUpperCase()
+            text: root.clockAlt ? (Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "d MMM").toUpperCase() + "  W" + root.isoWeek(clock.date))
+                                : Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "ddd d MMM").toUpperCase()
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: 11
             font.letterSpacing: 1
+          }
+          // click: calendar; right-click: date with the week number
+          HoverHandler { cursorShape: root.setting("clock", "calendar") !== false ? Qt.PointingHandCursor : Qt.ArrowCursor }
+          TapHandler {
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onTapped: function(point, button) {
+              if (button === Qt.RightButton) root.clockAlt = !root.clockAlt
+              else if (root.setting("clock", "calendar") !== false) { root.calMonth = new Date(); root.calendarOpen = !root.calendarOpen }
+            }
+          }
+        }
+
+        // -- status row: indicators, update available, keyboard layout, battery --
+        RowLayout {
+          id: secStatus
+          readonly property bool anyShown: root.batteryPresent || statusRep.shownCount > 0
+          // Stays "visible" while empty and collapses to nothing instead, so the
+          // hosted widgets' own visibility (e.g. update available) can be read.
+          visible: root.sectionShown("clock") && root.setting("clock", "status") !== false
+          opacity: root.sectionOpacity("clock")
+          clip: true
+          Layout.fillWidth: true
+          Layout.preferredHeight: anyShown ? 24 : 0
+          Layout.topMargin: anyShown ? -8 : -mainCol.spacing
+          spacing: 2
+          Repeater {
+            id: statusRep
+            property int shownCount: 0
+            function recount() { var n = 0; for (var i = 0; i < count; i++) { var it = itemAt(i); if (it && it.shown) n++ } shownCount = n }
+            model: root.statusIds
+            Loader {
+              id: shost
+              required property var modelData
+              readonly property string moduleName: String(modelData)
+              readonly property var registryEntry: {
+                var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                return w ? w[moduleName] || null : null
+              }
+              active: !!registryEntry && !!registryEntry.component
+              sourceComponent: registryEntry ? registryEntry.component : null
+              readonly property bool shown: !!item && item.visible && (item.implicitWidth || 0) > 0
+              onShownChanged: statusRep.recount()
+              Layout.preferredWidth: shown ? item.implicitWidth : 0
+              Layout.preferredHeight: shown ? Math.max(22, item.implicitHeight || 22) : 0
+              function inject() {
+                if (!item) return
+                if ("fixedEdge" in item) item.fixedEdge = "start"
+                if ("bar" in item) item.bar = statusBar
+                if ("moduleName" in item) item.moduleName = shost.moduleName
+                if ("settings" in item) {
+                  var meta = registryEntry && registryEntry.metadata ? registryEntry.metadata : {}
+                  var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+                  item.settings = JSON.parse(JSON.stringify(defs))
+                }
+              }
+              onLoaded: { inject(); Qt.callLater(inject); Qt.callLater(statusRep.recount) }
+            }
+          }
+          Item { Layout.fillWidth: true }
+          Text {
+            visible: root.batteryPresent
+            textFormat: Text.PlainText
+            text: root.batteryGlyph() + " " + root.batteryPct + "%"
+            color: !root.batteryCharging && root.batteryPct <= 15 ? root.urgent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openSettings("power", win.monitorName) }
+          }
+        }
+
+        // -- calendar (click the clock) ------------------------------------------
+        ColumnLayout {
+          id: secCalendar
+          visible: root.sectionShown("clock") && root.calendarOpen
+          Layout.fillWidth: true
+          Layout.topMargin: -6
+          spacing: 4
+          readonly property var loc: Qt.locale(Commons.I18n.formatLocale)
+          RowLayout {
+            Layout.fillWidth: true
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: secCalendar.loc.toString(root.calMonth, "MMMM yyyy")
+              color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true
+            }
+            Repeater {
+              model: [["\uf053", -1], ["\uf111", 0], ["\uf054", 1]]
+              Text {
+                required property var modelData
+                textFormat: Text.PlainText
+                text: modelData[0]
+                color: navMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: modelData[1] === 0 ? 6 : 10
+                Layout.leftMargin: 8
+                MouseArea {
+                  id: navMouse
+                  anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: root.calMonth = parent.modelData[1] === 0 ? new Date() : new Date(root.calMonth.getFullYear(), root.calMonth.getMonth() + parent.modelData[1], 1)
+                }
+              }
+            }
+          }
+          Grid {
+            id: calGrid
+            Layout.fillWidth: true
+            columns: 7
+            readonly property real cell: width / 7
+            Repeater {
+              model: 7
+              Text {
+                required property int index
+                width: calGrid.cell; height: 18
+                horizontalAlignment: Text.AlignHCenter
+                textFormat: Text.PlainText
+                text: secCalendar.loc.dayName((secCalendar.loc.firstDayOfWeek + index) % 7, Locale.ShortFormat).substring(0, 2)
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 9
+              }
+            }
+            Repeater {
+              model: root.calDays(root.calMonth)
+              Rectangle {
+                required property var modelData
+                readonly property bool today: modelData.toDateString() === clock.date.toDateString()
+                readonly property bool inMonth: modelData.getMonth() === root.calMonth.getMonth()
+                width: calGrid.cell; height: 22
+                radius: 5
+                color: today ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent"
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: parent.modelData.getDate()
+                  color: parent.today ? root.foreground : parent.inMonth ? root.dim : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+                  font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.today
+                }
+              }
+            }
           }
         }
 
@@ -4640,7 +4867,7 @@ Item {
               }
 
               // Power
-              SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) }
+              SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
               SectionBody {
                 visible: root.qsSection === "power"
                 RowLayout {
