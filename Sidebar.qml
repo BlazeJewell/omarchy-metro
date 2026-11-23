@@ -2003,14 +2003,40 @@ Item {
         property real dragY: 0
         property int dropIndex: -1
         property string dropSide: ""
-        readonly property var wins: win.overviewHere ? root.overviewWindows() : []
+        // type to search, a workspace filter, and a keyboard selection
+        property string query: ""
+        property int wsFilter: 0           // 0 = all workspaces
+        property int sel: 0
+        readonly property var allWins: win.overviewHere ? root.overviewWindows() : []
+        readonly property var wsList: {
+          var ids = []
+          allWins.forEach(function(t) { if (t.workspace && t.workspace.id > 0 && ids.indexOf(t.workspace.id) === -1) ids.push(t.workspace.id) })
+          return ids.sort(function(a, b) { return a - b })
+        }
+        readonly property var wins: allWins.filter(function(t) {
+          if (overviewWin.wsFilter > 0 && !(t.workspace && t.workspace.id === overviewWin.wsFilter)) return false
+          var q = overviewWin.query.toLowerCase().trim()
+          if (!q) return true
+          var hay = (String(t.title || "") + " " + root.overviewAppName(t)).toLowerCase()
+          return q.split(/\s+/).every(function(w) { return hay.indexOf(w) >= 0 })
+        })
         readonly property int count: wins.length
         readonly property int cols: Math.max(1, Math.ceil(Math.sqrt(count)))
         readonly property int rowsN: Math.max(1, Math.ceil(count / cols))
+        onQueryChanged: sel = 0
+        onWsFilterChanged: sel = 0
+        onVisibleChanged: if (visible) { query = ""; wsFilter = 0; sel = 0 }
+        function pickSelected() {
+          var t = overviewWin.wins[overviewWin.sel]
+          if (!t) return
+          root.closeOverview()
+          if (!(t.activated && !root.isMinimized(t))) root.activateWindow(t, root.shiftHeld)
+        }
         readonly property real pad: 48
+        readonly property real topPad: 64     // room for the search line and workspace strip
         readonly property real gap: 28
         readonly property real cellW: (width - pad * 2 - gap * (cols - 1)) / cols
-        readonly property real cellH: (height - pad * 2 - gap * (rowsN - 1)) / rowsN
+        readonly property real cellH: (height - pad - topPad - gap * (rowsN - 1)) / rowsN
         function lerp(a, b) { return a + (b - a) * overviewWin.p }
 
         Rectangle {
@@ -2018,8 +2044,53 @@ Item {
           color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)   // fully opaque
           opacity: overviewWin.p
           focus: true
-          Keys.onEscapePressed: root.closeOverview()
+          Keys.onPressed: function(event) {
+            var n = overviewWin.count, c = overviewWin.cols
+            if (event.key === Qt.Key_Escape) { if (overviewWin.query) overviewWin.query = ""; else root.closeOverview() }
+            else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) overviewWin.pickSelected()
+            else if (event.key === Qt.Key_Right) overviewWin.sel = n ? (overviewWin.sel + 1) % n : 0
+            else if (event.key === Qt.Key_Left) overviewWin.sel = n ? (overviewWin.sel - 1 + n) % n : 0
+            else if (event.key === Qt.Key_Down) overviewWin.sel = Math.min(n - 1, overviewWin.sel + c)
+            else if (event.key === Qt.Key_Up) overviewWin.sel = Math.max(0, overviewWin.sel - c)
+            else if (event.key === Qt.Key_Tab) {
+              var list = [0].concat(overviewWin.wsList), at = list.indexOf(overviewWin.wsFilter)
+              overviewWin.wsFilter = list[(at + 1) % list.length]
+            }
+            else if (event.key === Qt.Key_Backspace) overviewWin.query = overviewWin.query.slice(0, -1)
+            else if (event.text && event.text.length === 1 && event.text >= " ") overviewWin.query += event.text
+            else return
+            event.accepted = true
+          }
           MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; enabled: root.overviewOpen; onClicked: root.closeOverview() }
+        }
+
+        // search line + workspace strip
+        RowLayout {
+          x: overviewWin.pad
+          width: overviewWin.width - overviewWin.pad * 2
+          y: 22
+          opacity: overviewWin.p
+          spacing: 14
+          Text {
+            textFormat: Text.PlainText
+            text: overviewWin.query ? "⌕ " + overviewWin.query : "⌕ type to search"
+            color: overviewWin.query ? root.foreground : root.dim
+            font.family: root.fontFamily; font.pixelSize: 12; font.bold: !!overviewWin.query
+          }
+          Item { Layout.fillWidth: true }
+          Repeater {
+            model: [0].concat(overviewWin.wsList)
+            Text {
+              required property var modelData
+              readonly property bool on: overviewWin.wsFilter === modelData
+              textFormat: Text.PlainText
+              text: modelData === 0 ? "All" : String((modelData - 1) % 10 + 1)
+              color: on ? root.foreground : (wsfMouse.containsMouse ? root.foreground : root.dim)
+              font.family: root.fontFamily; font.pixelSize: 12; font.bold: on; font.underline: on
+              MouseArea { id: wsfMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: overviewWin.wsFilter = modelData }
+            }
+          }
+          Text { textFormat: Text.PlainText; text: "Tab"; color: root.faint; font.family: root.fontFamily; font.pixelSize: 9 }
         }
 
         Text {
@@ -2052,7 +2123,7 @@ Item {
             readonly property int row: Math.floor(index / overviewWin.cols)
             readonly property int inRow: row === overviewWin.rowsN - 1 ? overviewWin.count - overviewWin.cols * (overviewWin.rowsN - 1) : overviewWin.cols
             readonly property real cellX: overviewWin.pad + col * (overviewWin.cellW + overviewWin.gap) + (overviewWin.cols - inRow) * (overviewWin.cellW + overviewWin.gap) / 2
-            readonly property real cellY: overviewWin.pad + row * (overviewWin.cellH + overviewWin.gap)
+            readonly property real cellY: overviewWin.topPad + row * (overviewWin.cellH + overviewWin.gap)
             readonly property real fit: Math.min(overviewWin.cellW / srcW, (overviewWin.cellH - 34) / srcH)
             readonly property real endW: srcW * fit
             readonly property real endH: srcH * fit
@@ -2076,8 +2147,8 @@ Item {
               radius: 12
               color: cellMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
                    : !shot.hasContent ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
-              border.width: cell.front ? 2 * overviewWin.p : 0
-              border.color: root.urgent
+              border.width: (cell.index === overviewWin.sel ? 2 : (cell.front ? 1 : 0)) * overviewWin.p
+              border.color: cell.index === overviewWin.sel ? root.foreground : root.urgent
               ScreencopyView {
                 id: shot
                 anchors.fill: parent
