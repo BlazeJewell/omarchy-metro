@@ -38,6 +38,7 @@ Item {
 
   // ---- what the host and other plugins read off the active bar -----------
   readonly property int sidebarWidth: {
+    if (root.liveWidth > 0) return root.liveWidth
     var s = root.userSettings ? root.userSettings.width : undefined
     if (s >= 200) return Math.round(s)
     var w = barConfig && barConfig.sidebarWidth
@@ -1379,7 +1380,8 @@ Item {
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true },
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false },
-    bottom: { plugins: true, tray: true }
+    bottom: { plugins: true, tray: true },
+    general: { background: "solid", autohide: false }
   })
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
   property var userSettings: ({})
@@ -1398,6 +1400,7 @@ Item {
   }
   // While editing, changes only preview (Save writes them, Cancel drops them).
   function saveSettings(next) {
+    if (root.editing) root.editHistory = root.editHistory.concat([JSON.stringify(root.userSettings)]).slice(-50)
     root.userSettings = next
     if (!root.editing) root.writeSettings()
   }
@@ -1448,6 +1451,8 @@ Item {
     root.closeDockedPanel()
     root.editMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
     root.editSnapshot = JSON.parse(JSON.stringify(root.userSettings))
+    root.editHistory = []
+    root.profileNaming = false
     root.editing = true
   }
   property var editSnapshot: ({})
@@ -1702,6 +1707,41 @@ Item {
     if (steps.length) root.run(steps.join("; "))
   }
 
+  // ---- editor history, reset, profiles ---------------------------------------------
+  property var editHistory: []
+  function undoEdit() {
+    if (root.editHistory.length === 0) return
+    var prev = root.editHistory[root.editHistory.length - 1]
+    root.editHistory = root.editHistory.slice(0, -1)
+    root.userSettings = JSON.parse(prev)
+  }
+  function resetAll() { root.saveSettings({}) }
+  readonly property string profilesPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-profiles.json"
+  property var profiles: ({})
+  property bool profileNaming: false
+  FileView {
+    path: root.profilesPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object") root.profiles = v } catch (e) {} }
+  }
+  function writeProfiles(next) {
+    root.profiles = next
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(next, null, 2), root.profilesPath])
+  }
+  function saveProfile(name) {
+    name = String(name || "").trim()
+    if (!name) return
+    var next = Object.assign({}, root.profiles)
+    next[name] = JSON.parse(JSON.stringify(root.userSettings))
+    root.writeProfiles(next)
+  }
+  function loadProfile(name) { if (root.profiles[name]) root.saveSettings(JSON.parse(JSON.stringify(root.profiles[name]))) }
+  function deleteProfile(name) { var next = Object.assign({}, root.profiles); delete next[name]; root.writeProfiles(next) }
+  // Width while the edge is being dragged (saved on release).
+  property int liveWidth: 0
+
   // Default output volume
   readonly property var sink: Pipewire.defaultAudioSink
   PwObjectTracker { objects: root.sink ? [root.sink] : [] }
@@ -1732,8 +1772,46 @@ Item {
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
       implicitWidth: root.sidebarWidth
-      exclusiveZone: root.sidebarWidth
-      color: root.background
+      exclusionMode: win.autoHide ? ExclusionMode.Ignore : ExclusionMode.Normal
+      exclusiveZone: win.autoHide ? 0 : root.sidebarWidth
+      margins.left: win.tucked ? -(root.sidebarWidth - 4) : 0
+      color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
+
+      // -- auto-hide: tucked away off the left edge until the pointer touches it --
+      readonly property bool autoHide: root.setting("general", "autohide") === true
+      readonly property bool keepOpen: (root.searching && root.searchMonitor === win.monitorName) || win.qsHere || win.trayHere
+        || root.dockedPanel !== null || win.editHere || win.menuItem !== null || win.dragItem !== null || win.overviewHere
+      property bool revealed: false
+      readonly property bool tucked: autoHide && !revealed && !keepOpen
+      HoverHandler {
+        id: sideHover
+        onHoveredChanged: { if (hovered) { hideTimer.stop(); win.revealed = true } else hideTimer.restart() }
+      }
+      Timer { id: hideTimer; interval: 600; onTriggered: if (!sideHover.hovered) win.revealed = false }
+      onKeepOpenChanged: if (!keepOpen && !sideHover.hovered) hideTimer.restart()
+
+      // -- drag the sidebar's right edge to resize it ----------------------------------
+      MouseArea {
+        z: 70
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        width: 5
+        cursorShape: Qt.SizeHorCursor
+        hoverEnabled: true
+        preventStealing: true
+        property bool resizing: false
+        onPressed: resizing = true
+        onPositionChanged: function(m) {
+          if (!resizing) return
+          var p = mapToItem(win.contentItem, m.x, m.y)
+          root.liveWidth = Math.max(220, Math.min(400, Math.round(p.x / 10) * 10))
+        }
+        onReleased: {
+          resizing = false
+          if (root.liveWidth > 0) { var w = root.liveWidth; root.setSetting("", "width", w); root.liveWidth = 0 }
+        }
+      }
 
       // Tooltip for hosted widgets and tray icons.
       PopupWindow {
@@ -2402,23 +2480,33 @@ Item {
           property bool noPanel: false
           property int tries: 0
 
+          readonly property bool collapsed: root.setting(secId, "collapsed") === true
           Text {
             visible: root.setting(xsec.secId, "title") !== false
             Layout.fillWidth: true
             textFormat: Text.PlainText
-            text: root.widgetName(xsec.wid).toUpperCase()
-            color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            text: (xsec.collapsed ? "▸ " : "▾ ") + root.widgetName(xsec.wid).toUpperCase()
+            color: xTitleMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
             elide: Text.ElideRight
+            // click the title to fold the section
+            MouseArea { id: xTitleMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting(xsec.secId, "collapsed", !xsec.collapsed) }
           }
           // "squeeze": content reflows to the sidebar's width; "shrink": drawn at the
           // panel's own width and scaled down to fit (for fixed-width panels)
           readonly property bool shrink: root.setting(secId, "fit") === "shrink"
           readonly property real natW: xsec.panel ? Math.max(1, xsec.panel.contentWidth) : 1
           readonly property real k: shrink ? Math.min(1, xbody.width / natW) : 1
-          Item {
+          readonly property real fullH: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
+          readonly property int maxH: root.setting(secId, "maxH") || 0
+          Flickable {
             id: xbody
+            visible: !xsec.collapsed
             Layout.fillWidth: true
-            Layout.preferredHeight: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
+            Layout.preferredHeight: xsec.maxH > 0 ? Math.min(xsec.fullH, xsec.maxH) : xsec.fullH
+            contentWidth: width
+            contentHeight: xsec.fullH
+            interactive: contentHeight > height + 1
+            boundsBehavior: Flickable.StopAtBounds
             clip: true
             Item {
               id: xinner
@@ -2446,18 +2534,28 @@ Item {
               if ("fixedEdge" in item) item.fixedEdge = "start"
               if ("bar" in item) item.bar = embedBar
               if ("moduleName" in item) item.moduleName = xsec.wid
-              if ("settings" in item) {
-                var meta = xsec.entry && xsec.entry.metadata ? xsec.entry.metadata : {}
-                var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
-                var merged = JSON.parse(JSON.stringify(defs))
-                var lay = root.barConfig && root.barConfig.layout ? root.barConfig.layout : {}
-                ;["left", "centerBegin", "center", "centerEnd", "right", "tray"].forEach(function(sec) {
-                  (lay[sec] || []).forEach(function(e) { if (e && e.id === xsec.wid) for (var k in e) if (k !== "id") merged[k] = e[k] })
-                })
-                item.settings = merged
-              }
+              xsec.applySettings()
               embedTimer.restart()
             }
+          }
+          // the widget's settings: its defaults, its bar entry, then options set in the editor
+          function applySettings() {
+            var item = xhost.item
+            if (!item || !("settings" in item)) return
+            var meta = xsec.entry && xsec.entry.metadata ? xsec.entry.metadata : {}
+            var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+            var merged = JSON.parse(JSON.stringify(defs))
+            var lay = root.barConfig && root.barConfig.layout ? root.barConfig.layout : {}
+            ;["left", "centerBegin", "center", "centerEnd", "right", "tray"].forEach(function(sec) {
+              (lay[sec] || []).forEach(function(e) { if (e && e.id === xsec.wid) for (var k in e) if (k !== "id") merged[k] = e[k] })
+            })
+            var opts = root.setting(xsec.secId, "opts") || {}
+            for (var o in opts) merged[o] = opts[o]
+            if (JSON.stringify(item.settings) !== JSON.stringify(merged)) item.settings = merged
+          }
+          Connections {
+            target: root
+            function onUserSettingsChanged() { xsec.applySettings() }
           }
           // find the widget's panel, keep it open (its window hidden) and move its content here
           Timer {
@@ -2815,7 +2913,7 @@ Item {
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Top
         WlrLayershell.namespace: "jake-sidebar-editor"
-        WlrLayershell.keyboardFocus: win.editHere && root.addOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+        WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
         Rectangle {
           anchors.fill: parent
@@ -3069,6 +3167,51 @@ Item {
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
               OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") !== false; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
+              OptRow { label: "Max height"; options: [[0, "auto"], [200, "200"], [300, "300"], [450, "450"]]; current: root.setting(root.editSection, "maxH") || 0; onPicked: function(v) { root.setSetting(root.editSection, "maxH", v) } }
+              OptRow { label: "Folded"; options: parent.parent.onOff; current: root.setting(root.editSection, "collapsed") === true; onPicked: function(v) { root.setSetting(root.editSection, "collapsed", v) } }
+              // the widget's own options (from its plugin's settings schema)
+              EdHeading {
+                readonly property var schema: (function() {
+                  var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                  var meta = w && w[root.widgetOf(root.editSection)] ? (w[root.widgetOf(root.editSection)].metadata || {}) : {}
+                  var sc = meta.schema || (meta.barWidget && meta.barWidget.schema) || []
+                  return Array.isArray(sc) ? sc.filter(function(f) { return f && (f.type === "boolean" || f.type === "enum" || f.type === "integer") }) : []
+                })()
+                visible: schema.length > 0
+                text: "WIDGET OPTIONS"
+                id: optHeading
+              }
+              Repeater {
+                model: optHeading.schema
+                Loader {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  readonly property var opts: root.setting(root.editSection, "opts") || {}
+                  readonly property var cur: opts[modelData.key] !== undefined ? opts[modelData.key] : modelData.defaultValue
+                  function set(v) { var o = JSON.parse(JSON.stringify(opts)); o[modelData.key] = v; root.setSetting(root.editSection, "opts", o) }
+                  sourceComponent: modelData.type === "integer" ? optStep : optPick
+                  Component {
+                    id: optPick
+                    OptRow {
+                      label: modelData.label || modelData.key
+                      options: modelData.type === "boolean" ? [[true, "on"], [false, "off"]] : (modelData.options || []).map(function(o) { return [o, String(o)] })
+                      current: cur
+                      onPicked: function(v) { set(v) }
+                    }
+                  }
+                  Component {
+                    id: optStep
+                    StepRow {
+                      label: modelData.label || modelData.key
+                      value: Number(cur || 0)
+                      min: modelData.min !== undefined ? modelData.min : 0
+                      max: modelData.max !== undefined ? modelData.max : 100
+                      step: modelData.step || 1
+                      onChanged: function(v) { set(v) }
+                    }
+                  }
+                }
+              }
               Text {
                 Layout.topMargin: 4
                 textFormat: Text.PlainText; text: "Remove this section"
@@ -3123,12 +3266,66 @@ Item {
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
             EdHeading { text: "WHOLE SIDEBAR" }
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
+            OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
+            OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
+            // profiles: saved layouts to switch between
+            EdHeading { text: "PROFILES" }
+            Flow {
+              Layout.fillWidth: true
+              spacing: 12
+              Repeater {
+                model: Object.keys(root.profiles).sort()
+                Row {
+                  required property var modelData
+                  spacing: 4
+                  Text { textFormat: Text.PlainText; text: modelData; color: prLoad.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; font.underline: prLoad.containsMouse
+                    MouseArea { id: prLoad; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.loadProfile(modelData) } }
+                  Text { textFormat: Text.PlainText; text: "✕"; color: prDel.containsMouse ? root.urgent : root.faint; font.family: root.fontFamily; font.pixelSize: 9
+                    MouseArea { id: prDel; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.deleteProfile(modelData) } }
+                }
+              }
+              Text {
+                visible: !root.profileNaming
+                textFormat: Text.PlainText; text: "+ save current as…"; color: prNew.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11
+                MouseArea { id: prNew; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.profileNaming = true }
+              }
+            }
+            Rectangle {
+              visible: root.profileNaming
+              Layout.fillWidth: true
+              Layout.preferredHeight: 26
+              radius: 4; color: "transparent"; border.width: 1; border.color: root.dim
+              TextInput {
+                id: profileInput
+                anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                verticalAlignment: TextInput.AlignVCenter
+                color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; clip: true
+                Keys.onReturnPressed: { root.saveProfile(text); text = ""; root.profileNaming = false }
+                Keys.onEnterPressed: { root.saveProfile(text); text = ""; root.profileNaming = false }
+                Keys.onEscapePressed: { text = ""; root.profileNaming = false }
+                Connections { target: root; function onProfileNamingChanged() { if (root.profileNaming) Qt.callLater(function() { profileInput.forceActiveFocus() }) } }
+                Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "Profile name, then Enter"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              }
+            }
             RowLayout {
               Layout.fillWidth: true
               Text {
                 textFormat: Text.PlainText; text: "Reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
                 font.family: root.fontFamily; font.pixelSize: 10
                 MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
+              }
+              Text {
+                Layout.leftMargin: 12
+                visible: root.editHistory.length > 0
+                textFormat: Text.PlainText; text: "Undo"; color: undoMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: undoMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.undoEdit() }
+              }
+              Text {
+                Layout.leftMargin: 12
+                textFormat: Text.PlainText; text: "Reset all"; color: resetAllMouse.containsMouse ? root.urgent : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: resetAllMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetAll() }
               }
               Item { Layout.fillWidth: true }
               Text {
