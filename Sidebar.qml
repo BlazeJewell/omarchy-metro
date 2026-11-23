@@ -1884,7 +1884,11 @@ Item {
       implicitWidth: root.sidebarWidth
       exclusionMode: win.autoHide ? ExclusionMode.Ignore : ExclusionMode.Normal
       exclusiveZone: win.autoHide ? 0 : root.sidebarWidth
-      margins.left: win.tucked ? -(root.sidebarWidth - 4) : 0
+      // Over a fullscreen window the sidebar comes and goes with the overview,
+      // sliding in from the left as it zooms out and back as it closes.
+      readonly property real fsSlide: win.fsHere && win.overviewHere && !(root.searching && root.searchMonitor === win.monitorName)
+                                      && !win.qsHere && !win.trayHere && !win.editHere ? 1 - root.ovProgress : 0
+      margins.left: win.tucked ? -(root.sidebarWidth - 4) : -Math.round(root.sidebarWidth * win.fsSlide)
       color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
 
       // -- auto-hide: tucked away off the left edge until the pointer touches it --
