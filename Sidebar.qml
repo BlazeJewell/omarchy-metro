@@ -227,6 +227,12 @@ Item {
   property real cpu: 0
   property real mem: 0
   property real disk: 0
+  // GPU (the one with the most VRAM; gpu.sh)
+  property bool gpuFound: false
+  property real gpu: 0
+  property real vramUsed: 0
+  property real vramTotal: 0
+  property real gpuTemp: 0
   property real rxRate: 0
   property real txRate: 0
   property var rxHistory: []
@@ -249,6 +255,7 @@ Item {
       } else if (f[0] === "MemTotal:") memTotal = Number(f[1])
       else if (f[0] === "MemAvailable:") memAvail = Number(f[1])
       else if (f[0] === "disk") disk = parseInt(f[1])
+      else if (f[0] === "gpu") { gpuFound = true; gpu = Number(f[1]) || 0; vramUsed = Number(f[2]) || 0; vramTotal = Number(f[3]) || 0; gpuTemp = Number(f[4]) || 0 }
       else if (f[0] === "net") {
         var now = Date.now(), rx = Number(f[1]), tx = Number(f[2])
         if (_lastNet) {
@@ -276,7 +283,8 @@ Item {
     command: ["sh", "-c",
       "head -1 /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; " +
       "df -P / | awk 'NR==2{print \"disk\", $5}'; " +
-      "awk 'NR>2 && $1 != \"lo:\" {rx+=$2; tx+=$10} END {print \"net\", rx, tx}' /proc/net/dev"]
+      "awk 'NR>2 && $1 != \"lo:\" {rx+=$2; tx+=$10} END {print \"net\", rx, tx}' /proc/net/dev; " +
+      "sh \"$1\"", "sh", Qt.resolvedUrl("gpu.sh").toString().replace("file://", "")]
     stdout: StdioCollector { onStreamFinished: root.parseStats(text) }
   }
   Timer {
@@ -1374,7 +1382,7 @@ Item {
   // uses these defaults, which are how the sidebar looks out of the box.
   readonly property var settingsDefaults: ({
     clock: { show: true, h24: true, date: true, seconds: false },
-    system: { show: true, cpu: true, mem: true, disk: true, network: true, refresh: 2 },
+    system: { show: true, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, refresh: 2 },
     workspaces: { show: true, count: 5, style: "numbers", scroll: true },
     media: { show: false, idle: true },
     notifications: { show: false, count: 4 },
@@ -3107,6 +3115,9 @@ Item {
               OptRow { label: "CPU"; options: parent.parent.onOff; current: root.setting("system", "cpu"); onPicked: function(v) { root.setSetting("system", "cpu", v) } }
               OptRow { label: "Memory"; options: parent.parent.onOff; current: root.setting("system", "mem"); onPicked: function(v) { root.setSetting("system", "mem", v) } }
               OptRow { label: "Disk"; options: parent.parent.onOff; current: root.setting("system", "disk"); onPicked: function(v) { root.setSetting("system", "disk", v) } }
+              OptRow { visible: root.gpuFound; label: "GPU usage"; options: parent.parent.onOff; current: root.setting("system", "gpu"); onPicked: function(v) { root.setSetting("system", "gpu", v) } }
+              OptRow { visible: root.gpuFound; label: "GPU memory (VRAM)"; options: parent.parent.onOff; current: root.setting("system", "vram"); onPicked: function(v) { root.setSetting("system", "vram", v) } }
+              OptRow { visible: root.gpuFound; label: "GPU temperature"; options: parent.parent.onOff; current: root.setting("system", "gpuTemp"); onPicked: function(v) { root.setSetting("system", "gpuTemp", v) } }
               OptRow { label: "Network speed"; options: parent.parent.onOff; current: root.setting("system", "network"); onPicked: function(v) { root.setSetting("system", "network", v) } }
               StepRow { label: "Refresh every"; value: root.setting("system", "refresh"); min: 1; max: 10; suffix: " s"; onChanged: function(v) { root.setSetting("system", "refresh", v) } }
             }
@@ -3364,28 +3375,32 @@ Item {
           }
         }
 
-        // -- cpu / mem / disk ---------------------------------------------
-        RowLayout {
+        // -- cpu / mem / disk / gpu (wraps to a second line when it doesn't fit) --
+        Flow {
           id: secStats
-          visible: root.sectionShown("system") && (root.setting("system", "cpu") || root.setting("system", "mem") || root.setting("system", "disk"))
+          visible: root.sectionShown("system") && (root.setting("system", "cpu") || root.setting("system", "mem") || root.setting("system", "disk")
+                   || (root.gpuFound && (root.setting("system", "gpu") || root.setting("system", "vram") || root.setting("system", "gpuTemp"))))
           opacity: root.sectionOpacity("system")
           Layout.fillWidth: true
           spacing: 14
           Repeater {
-            model: [["CPU", root.cpu, "cpu"], ["MEM", root.mem, "mem"], ["DSK", root.disk, "disk"]].filter(function(m) { return root.setting("system", m[2]) })
-            RowLayout {
+            id: statsRep
+            model: [["CPU", root.cpu, "cpu"], ["MEM", root.mem, "mem"], ["DSK", root.disk, "disk"],
+                    ["GPU", root.gpu, "gpu"], ["VRM", root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0, "vram"], ["TMP", root.gpuTemp, "gpuTemp", "°"]]
+                   .filter(function(m) { return root.setting("system", m[2]) && (["gpu", "vram", "gpuTemp"].indexOf(m[2]) === -1 || root.gpuFound) })
+            Row {
               required property var modelData
               spacing: 5
-              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              Text { anchors.baseline: statVal.baseline; textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
               Text {
+                id: statVal
                 textFormat: Text.PlainText
-                text: Math.round(modelData[1]) + "%"
+                text: Math.round(modelData[1]) + (modelData[3] || "%")
                 color: modelData[1] >= 85 ? root.urgent : root.foreground
                 font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
               }
             }
           }
-          Item { Layout.fillWidth: true }
         }
 
         // -- network --------------------------------------------------------
