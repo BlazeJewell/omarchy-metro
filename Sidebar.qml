@@ -2956,30 +2956,8 @@ Item {
                 MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
               }
             }
-            Text { Layout.fillWidth: true; Layout.topMargin: 4; textFormat: Text.PlainText; wrapMode: Text.WordWrap; text: "Click a section in the sidebar, or pick one. Drag a section to move it, or out past the edge to remove it."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
-
-            // section picker, as plain text
-            GridLayout {
-              Layout.fillWidth: true
-              Layout.bottomMargin: 6
-              columns: 3
-              rowSpacing: 6
-              columnSpacing: 6
-              Repeater {
-                model: root.editSections
-                Text {
-                  required property var modelData
-                  readonly property bool sel: root.editSection === modelData.id
-                  Layout.fillWidth: true
-                  textFormat: Text.PlainText
-                  text: (sel ? "› " : "  ") + modelData.label
-                  color: sel ? root.foreground : (pickMouse.containsMouse ? root.foreground : root.dim)
-                  font.family: root.fontFamily; font.pixelSize: 10; font.letterSpacing: 1; font.bold: sel
-                  MouseArea { id: pickMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.editSection = modelData.id }
-                }
-              }
-            }
             Text {
+              Layout.topMargin: 6
               Layout.bottomMargin: 4
               visible: !root.addOpen
               textFormat: Text.PlainText
