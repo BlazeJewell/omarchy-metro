@@ -1,0 +1,1 @@
+["Discord","steam","firefox",{"class":"org.omarchy.agent","name":"Agent","argv":["foot","--app-id=org.omarchy.agent","-e","env","-u","CLAUDE_CONFIG_DIR","OMARCHY_AGENT_CLAUDE_HOME=","claude","--permission-mode","auto"]}]
