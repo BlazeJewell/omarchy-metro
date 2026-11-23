@@ -3,6 +3,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import Quickshell.Services.SystemTray
 import Quickshell.Services.Pipewire
+import Quickshell.Services.Mpris
 import Quickshell.Bluetooth
 import Quickshell.Networking
 import Quickshell.Wayland
@@ -629,6 +630,7 @@ Item {
     var next = Object.assign({}, root.expandedApps)
     next[key] = !next[key]
     root.expandedApps = next
+    root.writeState()
   }
   // One window of an app: in front -> minimize it; otherwise show it on its own
   // (others minimized first), or beside what's showing with Shift.
@@ -718,6 +720,7 @@ Item {
     function openSearch() { root.enterSearch() }
     function closeSearch() { root.exitSearch() }
     function quickSettings() { root.toggleQuickSettings() }
+    function launchPinned(n: int) { root.launchPinned(n) }
     function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
     function overview() { root.toggleOverview() }
     function settings(section: string) { root.openSettings(section) }
@@ -1371,9 +1374,11 @@ Item {
   readonly property var settingsDefaults: ({
     clock: { show: true, h24: true, date: true, seconds: false },
     system: { show: true, cpu: true, mem: true, disk: true, network: true, refresh: 2 },
-    workspaces: { show: true, count: 5 },
+    workspaces: { show: true, count: 5, style: "numbers", scroll: true },
+    media: { show: false, idle: true },
+    notifications: { show: false, count: 4 },
     search: { show: true, clip: true },
-    apps: { running: true, group: true, compact: false, indicator: "bar" },
+    apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false },
     bottom: { plugins: true, tray: true }
   })
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
@@ -1415,7 +1420,7 @@ Item {
   function sectionOpacity(section) { return root.setting(section, "show") === false ? 0.35 : 1 }
   readonly property int rowH: root.setting("apps", "compact") ? 30 : 36
   // Order of the sections down the sidebar (dragged in edit mode).
-  readonly property var defaultOrder: ["clock", "system", "workspaces", "search", "apps", "bottom"]
+  readonly property var defaultOrder: ["clock", "system", "workspaces", "search", "media", "notifications", "apps", "bottom"]
   readonly property var sectionOrder: {
     var saved = Array.isArray(root.userSettings.order) ? root.userSettings.order : []
     var known = root.defaultOrder.concat(root.extraSections.map(function(e) { return e.id }))
@@ -1433,7 +1438,8 @@ Item {
   property string editSection: "apps"
   readonly property var editSections: [
     { id: "clock", label: "CLOCK" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
-    { id: "search", label: "SEARCH" }, { id: "apps", label: "APP LIST" }, { id: "bottom", label: "BOTTOM BAR" }
+    { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
+    { id: "apps", label: "APP LIST" }, { id: "bottom", label: "BOTTOM BAR" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
     root.closeQuickSettings()
@@ -1490,6 +1496,7 @@ Item {
     root.saveSettings(next)
     if (root.editSection === id) root.editSection = "apps"
   }
+  readonly property var defaultSectionDesc: ({ media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
   property bool addOpen: false
   onEditingChanged: if (!editing) addOpen = false
   function removeSection(id) {
@@ -1558,7 +1565,7 @@ Item {
     var terms = q ? q.split(/\s+/) : []
     function match(text) { text = String(text).toLowerCase(); return terms.every(function(t) { return text.indexOf(t) >= 0 }) }
     var hidden = root.editSections.filter(function(e) { return root.setting(e.id, "show") === false })
-      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: "Removed — add it back", cat: "Section" } })
+      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Section" } })
     var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : {}
     var omarchy = [], plugins = []
     root.embeddableWidgets.forEach(function(id) {
@@ -1574,7 +1581,7 @@ Item {
       out.push({ kind: "header", name: title + " · " + rows.length })
       rows.forEach(function(r) { out.push(r) })
     }
-    group("REMOVED SECTIONS", hidden)
+    group("SECTIONS", hidden)
     group("OMARCHY", omarchy)
     group("PLUGINS", plugins)
     return out
@@ -1584,6 +1591,115 @@ Item {
     if (!row) return
     if (row.kind === "hidden") { root.setSetting(row.id, "show", true); root.editSection = row.id; root.addOpen = false }
     else if (row.kind === "widget") root.addWidgetSection(row.id)
+  }
+
+  // ---- media (MPRIS) -----------------------------------------------------------
+  readonly property var mediaPlayer: {
+    var ps = Mpris.players ? Mpris.players.values : []
+    for (var i = 0; i < ps.length; i++) if (ps[i].isPlaying) return ps[i]
+    return ps.length > 0 ? ps[0] : null
+  }
+  // MPRIS doesn't push the position; nudge it while something plays
+  Timer {
+    interval: 1000
+    repeat: true
+    running: !!root.mediaPlayer && root.mediaPlayer.isPlaying && root.setting("media", "show") !== false
+    onTriggered: if (root.mediaPlayer) root.mediaPlayer.positionChanged()
+  }
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0))
+    return Math.floor(sec / 60) + ":" + ("0" + (sec % 60)).slice(-2)
+  }
+
+  // ---- notifications (Omarchy keeps the history in a file) ----------------------
+  property var notifHistory: []
+  FileView {
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/notifications/history.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); if (Array.isArray(v)) root.notifHistory = v } catch (e) {} }
+  }
+  function agoText(ts) {
+    var s = Math.max(0, Date.now() / 1000 - Number(ts || 0))
+    if (s < 60) return "now"
+    if (s < 3600) return Math.floor(s / 60) + "m"
+    if (s < 86400) return Math.floor(s / 3600) + "h"
+    return Math.floor(s / 86400) + "d"
+  }
+  property int agoTick: 0
+  Timer { interval: 60000; repeat: true; running: true; onTriggered: root.agoTick++ }
+
+  // ---- app list extras -------------------------------------------------------------
+  // Unread count an app shows in its window title, like "(6) Discord".
+  function badgeOf(item) {
+    var wins = item && item.windows ? item.windows : []
+    var n = 0
+    for (var i = 0; i < wins.length; i++) {
+      var m = /^\s*\((\d+)\)/.exec(String(wins[i].title || ""))
+      if (m) n = Math.max(n, parseInt(m[1]))
+    }
+    return n
+  }
+  // App icons (only scanned while the option is on)
+  property var iconIndex: ({})
+  property var _pendingIcons: ({})
+  function iconFor(icon) {
+    var v = String(icon || "")
+    if (v.indexOf("file://") === 0 || v.indexOf("image://") === 0) return v
+    if (v.charAt(0) === "/") return "file://" + v
+    var found = v ? root.iconIndex[v] : null
+    if (found) return "file://" + found
+    var themed = v ? Quickshell.iconPath(v, true) : ""
+    if (themed.length > 0) return themed
+    var fb = root.iconIndex["application-x-executable"]
+    return fb ? "file://" + fb : ""
+  }
+  Process {
+    id: iconScan
+    running: root.setting("apps", "icons") === true
+    command: ["bash", "-c",
+      'dirs="$HOME/.icons $HOME/.local/share/icons"; IFS=":"; for d in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do dirs="$dirs $d/icons"; done; unset IFS; ' +
+      '{ for base in $dirs; do [[ -d $base ]] && find "$base" \\( -path "*/apps/*" -o -path "*/devices/*" \\) \\( -name "*.svg" -o -name "*.png" \\) 2>/dev/null; done; ' +
+      'find /usr/share/pixmaps -maxdepth 1 \\( -name "*.svg" -o -name "*.png" \\) 2>/dev/null; } ' +
+      "| awk '/\\.svg$/ { print; next } { png[++n] = $0 } END { for (i = 1; i <= n; i++) print png[i] }'"]
+    onStarted: root._pendingIcons = ({})
+    stdout: SplitParser {
+      onRead: function(line) {
+        var v = String(line || "").trim(), file = v.slice(v.lastIndexOf("/") + 1), dot = file.lastIndexOf(".")
+        var name = dot > 0 ? file.slice(0, dot) : file
+        if (name && root._pendingIcons[name] === undefined) root._pendingIcons[name] = v
+      }
+    }
+    onExited: root.iconIndex = root._pendingIcons
+  }
+
+  // Expanded window lists, remembered across restarts.
+  readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-state.json"
+  FileView {
+    path: root.statePath
+    printErrors: false
+    onLoaded: { try { var v = JSON.parse(text()); if (v && v.expanded) root.expandedApps = v.expanded } catch (e) {} }
+  }
+  function writeState() {
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify({ expanded: root.expandedApps }), root.statePath])
+  }
+
+  // Super+Alt+1..9: the pinned apps, in order.
+  function launchPinned(n) {
+    var rows = root.appItems("").filter(function(r) { return r.pinned })
+    var row = rows[n - 1]
+    if (row) root.activateApp(row, false)
+  }
+  // Move an app's showing windows to a workspace (dropping it on a workspace number).
+  function moveToWorkspace(item, ws) {
+    var wins = (item.windows || []).filter(function(t) { return !root.isMinimized(t) })
+    if (wins.length === 0) wins = item.windows || []
+    var steps = wins.map(function(t) {
+      return "hyprctl dispatch " + Util.shellQuote("hl.dsp.window.move({ workspace = \"" + ws + "\", follow = false, " + root.windowTarget(t) + " })")
+        + " >/dev/null; hyprctl dispatch " + Util.shellQuote("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })") + " >/dev/null"
+    })
+    if (steps.length) root.run(steps.join("; "))
   }
 
   // Default output volume
@@ -1748,8 +1864,17 @@ Item {
         var after = cy > h.subY + 15
         return { index: h.sub + (after ? 1 : 0), y: h.subY + (after ? 30 : 0) - 1, row: h.row }
       }
+      // a workspace number under the pointer while dragging (to move the app there)
+      property int dragWs: -1
+      function wsAt(x, y) {
+        if (!secWs.visible) return -1
+        var p = secWs.mapFromItem(win.contentItem, x, y)
+        var c = secWs.childAt(p.x, p.y)
+        return c && c.modelData !== undefined && typeof c.modelData === "number" ? c.modelData : -1
+      }
       function updateDrag(x, y) {
         win.dragX = x; win.dragY = y
+        win.dragWs = win.dragItem ? win.wsAt(x, y) : -1
         if (!win.dragItem) { win.listDrop = null; return }
         win.listDrop = win.dragItem.windowOnly ? win.windowDropAt(x, y) : win.listDropAt(x, y)
         win.trackSpring(x, y)
@@ -1760,7 +1885,10 @@ Item {
         win.dragItem = null
         win.listDrop = null
         springTimer.stop(); win.springKey = ""; win.springHit = null; win.springDone = ""
+        var ws = win.wsAt(x, y)
+        win.dragWs = -1
         if (!item) return
+        if (ws > 0 && (item.windows || []).length > 0) { root.moveToWorkspace(item, ws); return }
         if (x >= root.sidebarWidth) root.dropApp(item, x + win.screen.x, y + win.screen.y)
         else if (target && item.windowOnly) root.moveWindowTo(item.key, target.row.windows, item.windows[0], target.index)
         else if (target) root.dropOnList(item, target.index)
@@ -2317,7 +2445,7 @@ Item {
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() {
         var blocks = {
-          clock: [secClock], system: [secStats, secNet], workspaces: [secWs], search: [secSearch],
+          clock: [secClock], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
           apps: [menuList, appList], bottom: [dockCol, trayPanel, settingsPanel, bottomSep, secBottom]
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
@@ -2426,10 +2554,11 @@ Item {
           return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
         }
         readonly property var boxes: {
+          var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
           var rev = mainCol.height + secClock.y + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secBottom.y
           var out = {
             clock: boxFor([secClock]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
-            search: boxFor([secSearch]), apps: boxFor([appList]), bottom: boxFor([secBottom])
+            search: boxFor([secSearch]), media: boxFor([secMedia]), notifications: boxFor([secNotif]), apps: boxFor([appList]), bottom: boxFor([secBottom])
           }
           for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
           return out
@@ -2831,6 +2960,8 @@ Item {
               EdHeading { text: "WORKSPACES" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("workspaces", "show"); onPicked: function(v) { root.setSetting("workspaces", "show", v) } }
               StepRow { label: "Always show"; value: root.setting("workspaces", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("workspaces", "count", v) } }
+              OptRow { label: "Style"; options: [["numbers", "numbers"], ["dots", "dots"]]; current: root.setting("workspaces", "style"); onPicked: function(v) { root.setSetting("workspaces", "style", v) } }
+              OptRow { label: "Scroll to switch"; options: parent.parent.onOff; current: root.setting("workspaces", "scroll"); onPicked: function(v) { root.setSetting("workspaces", "scroll", v) } }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Workspaces past that appear while they have windows."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // SEARCH
@@ -2853,6 +2984,9 @@ Item {
               OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
               OptRow { label: "Open indicator"; options: [["bar", "bar + dot"], ["dot", "dot"], ["none", "none"]]; current: root.setting("apps", "indicator"); onPicked: function(v) { root.setSetting("apps", "indicator", v) } }
+              OptRow { label: "App icons"; options: parent.parent.onOff; current: root.setting("apps", "icons"); onPicked: function(v) { root.setSetting("apps", "icons", v) } }
+              OptRow { label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
+              OptRow { label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
               Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // a widget section
@@ -2874,6 +3008,25 @@ Item {
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "The widget's own panel, kept open here. Squeeze reflows it to the sidebar's width; shrink scales it down whole (better for fixed-width panels like the calendar)."
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // MEDIA
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "media"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "MEDIA" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("media", "show"); onPicked: function(v) { root.setSetting("media", "show", v) } }
+              OptRow { label: "When nothing plays"; options: [[true, "keep"], [false, "hide"]]; current: root.setting("media", "idle"); onPicked: function(v) { root.setSetting("media", "idle", v) } }
+            }
+            // NOTIFICATIONS
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "notifications"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "NOTIFICATIONS" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("notifications", "show"); onPicked: function(v) { root.setSetting("notifications", "show", v) } }
+              StepRow { label: "How many"; value: root.setting("notifications", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("notifications", "count", v) } }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The latest from Omarchy's notification history. \"silence\" turns on Do not disturb."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // BOTTOM BAR
             ColumnLayout {
@@ -3033,6 +3186,17 @@ Item {
           opacity: root.sectionOpacity("workspaces")
           Layout.fillWidth: true
           spacing: 6
+          // scroll over the workspaces to switch
+          WheelHandler {
+            enabled: root.setting("workspaces", "scroll") !== false
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: function(e) {
+              var cur = win.monitor && win.monitor.activeWorkspace ? win.monitor.activeWorkspace.id : 1
+              var next = e.angleDelta.y < 0 ? cur + 1 : cur - 1
+              if (next < 1) return
+              root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + next + "\" })"))
+            }
+          }
           Repeater {
             model: {
               var ids = []
@@ -3053,11 +3217,15 @@ Item {
                 for (var i = 0; i < all.length; i++) if (all[i].id === modelData) return all[i].toplevels.values.length > 0
                 return false
               }
-              width: 24; height: 24; radius: 4
-              color: active ? root.foreground : "transparent"
+              readonly property bool dots: root.setting("workspaces", "style") === "dots"
+              readonly property bool dropHere: win.dragWs === modelData
+              width: dots ? 14 : 24; height: dots ? 14 : 24; radius: dots ? 7 : 4
+              y: dots ? 5 : 0
+              color: dropHere ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35) : (active ? root.foreground : (dots && occupied ? root.dim : "transparent"))
               border.width: 1
-              border.color: active ? root.foreground : (occupied ? root.dim : root.faint)
+              border.color: dropHere ? root.urgent : (active ? root.foreground : (occupied ? root.dim : root.faint))
               Text {
+                visible: !wsBox.dots
                 anchors.centerIn: parent
                 textFormat: Text.PlainText
                 text: ((wsBox.modelData - 1) % 10 + 1).toString()
@@ -3168,6 +3336,117 @@ Item {
             visible: !parent.active
             onClicked: root.enterSearch(win.monitorName)
             z: 1
+          }
+        }
+
+        // -- media (added from "+ add section") ------------------------------------
+        ColumnLayout {
+          id: secMedia
+          visible: root.sectionShown("media") && (!!root.mediaPlayer || root.setting("media", "idle") !== false)
+          opacity: root.sectionOpacity("media")
+          Layout.fillWidth: true
+          spacing: 6
+          readonly property var p: root.mediaPlayer
+          // only when the player reports a real length (Firefox often doesn't)
+          readonly property bool timed: !!p && p.lengthSupported && p.length > 10 && p.position >= 0 && p.position <= p.length + 1
+          Text { textFormat: Text.PlainText; text: "MEDIA"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+          Text { visible: !secMedia.p; textFormat: Text.PlainText; text: "Nothing playing"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+          RowLayout {
+            visible: !!secMedia.p
+            Layout.fillWidth: true
+            spacing: 10
+            Rectangle {
+              Layout.preferredWidth: 44; Layout.preferredHeight: 44; radius: 6
+              color: root.faint
+              clip: true
+              Image { anchors.fill: parent; source: secMedia.p ? String(secMedia.p.trackArtUrl || "") : ""; fillMode: Image.PreserveAspectCrop; asynchronous: true }
+            }
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: 1
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: secMedia.p ? String(secMedia.p.trackTitle || secMedia.p.identity || "") : ""
+                color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: secMedia.p ? String(secMedia.p.trackArtist || secMedia.p.identity || "") : ""
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+          }
+          // progress
+          Item {
+            visible: secMedia.timed
+            Layout.fillWidth: true
+            Layout.preferredHeight: 14
+            readonly property real frac: secMedia.p && secMedia.p.length > 0 ? Math.max(0, Math.min(1, secMedia.p.position / secMedia.p.length)) : 0
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 3; radius: 2; color: root.faint }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * parent.frac; height: 3; radius: 2; color: root.foreground }
+            MouseArea {
+              anchors.fill: parent
+              enabled: !!secMedia.p && secMedia.p.canSeek
+              cursorShape: Qt.PointingHandCursor
+              onClicked: function(m) { if (secMedia.p) secMedia.p.position = secMedia.p.length * Math.max(0, Math.min(1, m.x / width)) }
+            }
+          }
+          RowLayout {
+            visible: !!secMedia.p
+            Layout.fillWidth: true
+            spacing: 14
+            Text { textFormat: Text.PlainText; text: secMedia.timed ? root.fmtTime(secMedia.p.position) + " / " + root.fmtTime(secMedia.p.length) : (secMedia.p && secMedia.p.isPlaying ? "playing" : "paused")
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+            Item { Layout.fillWidth: true }
+            Repeater {
+              model: [["\uf048", "prev"], ["play", "toggle"], ["\uf051", "next"]]
+              Text {
+                required property var modelData
+                textFormat: Text.PlainText
+                text: modelData[1] === "toggle" ? (secMedia.p && secMedia.p.isPlaying ? "\uf04c" : "\uf04b") : modelData[0]
+                color: mbMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 14
+                MouseArea {
+                  id: mbMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var p = secMedia.p; if (!p) return
+                    if (modelData[1] === "prev" && p.canGoPrevious) p.previous()
+                    else if (modelData[1] === "next" && p.canGoNext) p.next()
+                    else if (modelData[1] === "toggle" && p.canTogglePlaying) p.togglePlaying()
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // -- notifications (added from "+ add section") ----------------------------
+        ColumnLayout {
+          id: secNotif
+          visible: root.sectionShown("notifications")
+          opacity: root.sectionOpacity("notifications")
+          Layout.fillWidth: true
+          spacing: 6
+          RowLayout {
+            Layout.fillWidth: true
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "NOTIFICATIONS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+            Text {
+              textFormat: Text.PlainText; text: root.qsState.dnd ? "silenced" : "silence"
+              color: dndMouse.containsMouse || root.qsState.dnd ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 9; font.bold: root.qsState.dnd
+              MouseArea { id: dndMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsToggle("dnd") }
+            }
+          }
+          Text { visible: root.notifHistory.length === 0; textFormat: Text.PlainText; text: "No notifications"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+          Repeater {
+            model: root.notifHistory.slice(0, Math.max(1, root.setting("notifications", "count")))
+            ColumnLayout {
+              required property var modelData
+              Layout.fillWidth: true
+              spacing: 0
+              RowLayout {
+                Layout.fillWidth: true
+                Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: String(modelData.summary || modelData.app || "")
+                  color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+                Text { textFormat: Text.PlainText; text: (root.agoTick, root.agoText(modelData.ts)); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+              }
+              Text { Layout.fillWidth: true; visible: !!modelData.body; textFormat: Text.PlainText; elide: Text.ElideRight; text: String(modelData.body || "").replace(/\s+/g, " ")
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+            }
           }
         }
 
@@ -3330,6 +3609,13 @@ Item {
                 anchors.leftMargin: 14
                 anchors.rightMargin: 8
                 spacing: 10
+                IconImage {
+                  visible: root.setting("apps", "icons") === true
+                  Layout.preferredWidth: 18
+                  Layout.preferredHeight: 18
+                  source: visible ? root.iconFor(row.entry && row.entry.icon ? row.entry.icon : row.modelData.key) : ""
+                  opacity: row.running ? 1 : 0.7
+                }
                 ColumnLayout {
                   Layout.fillWidth: true
                   spacing: 0
@@ -3341,6 +3627,24 @@ Item {
                     font.family: root.fontFamily; font.pixelSize: 12; font.bold: row.focused
                     elide: Text.ElideRight
                   }
+                }
+                // unread count from the window title, e.g. "(6) Discord"
+                Rectangle {
+                  readonly property int n: root.setting("apps", "badges") !== false ? root.badgeOf(row.modelData) : 0
+                  visible: n > 0
+                  Layout.preferredWidth: Math.max(16, badgeText.implicitWidth + 8)
+                  Layout.preferredHeight: 16
+                  radius: 8
+                  color: root.foreground
+                  Text { id: badgeText; anchors.centerIn: parent; textFormat: Text.PlainText; text: parent.n > 99 ? "99+" : String(parent.n); color: root.background; font.family: root.fontFamily; font.pixelSize: 9; font.bold: true }
+                }
+                Text {
+                  readonly property var wsIds: (row.windows || []).filter(function(t) { return t.workspace && t.workspace.id > 0 }).map(function(t) { return t.workspace.id })
+                    .filter(function(v, i, a) { return a.indexOf(v) === i })
+                  visible: root.setting("apps", "workspace") === true && wsIds.length > 0
+                  textFormat: Text.PlainText
+                  text: wsIds.map(function(id) { return (id - 1) % 10 + 1 }).join(",")
+                  color: root.dim; font.family: root.fontFamily; font.pixelSize: 9
                 }
                 // several windows: a count that opens the window list
                 Rectangle {
