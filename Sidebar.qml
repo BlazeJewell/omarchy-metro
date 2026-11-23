@@ -4929,8 +4929,45 @@ Item {
               }
             }
 
-            LinkRow { visible: root.qsPage === ""; Layout.leftMargin: 6; Layout.topMargin: 4; label: "Edit sidebar"; onActivated: root.startEditing(win.monitorName) }
-            LinkRow { visible: root.qsPage === ""; Layout.leftMargin: 6; label: "All settings"; onActivated: { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup") } }
+            RowLayout {
+              visible: root.qsPage === ""
+              Layout.fillWidth: true
+              Layout.topMargin: 6
+              spacing: 6
+              Repeater {
+                model: [
+                  { label: "Edit sidebar", icon: "\uf044" },
+                  { label: "All settings", icon: "\uf013" }
+                ]
+                Rectangle {
+                  id: qsBtn
+                  required property var modelData
+                  required property int index
+                  Layout.fillWidth: true
+                  Layout.preferredWidth: 1
+                  implicitHeight: 28
+                  radius: 6
+                  color: qsBtnMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                                                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: 6
+                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.icon; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.label; color: qsBtnMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                  }
+                  MouseArea {
+                    id: qsBtnMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (qsBtn.index === 0) root.startEditing(win.monitorName)
+                      else { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup") }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
