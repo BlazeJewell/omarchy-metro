@@ -1001,7 +1001,7 @@ Item {
   }
 
   // Settings section (in the sidebar, above the gear)
-  property string qsSection: "sound"
+  property string qsSection: ""
   function toggleSection(id) { root.qsSection = root.qsSection === id ? "" : id }
   readonly property var btAdapter: Bluetooth.defaultAdapter
   readonly property var btDevices: {
@@ -1049,7 +1049,7 @@ Item {
 
   // ---- settings pages (detail views inside the settings area) --------------
   property string qsPage: ""
-  onQsOpenChanged: if (!qsOpen) { qsPage = ""; pwSsid = "" }
+  onQsOpenChanged: if (!qsOpen) { qsPage = ""; qsSection = ""; pwSsid = "" }
   onQsPageChanged: {
     pwSsid = ""
     if (root.wifiDevice) root.wifiDevice.scannerEnabled = qsPage === "network"
@@ -4506,21 +4506,22 @@ Item {
         id: qsOverlay
         visible: win.qsHere
         z: 20
-        readonly property real bottomY: mainCol.y + (secBottom.visible ? bottomSep.y : mainCol.height) - 6
-        x: mainCol.x - 6
-        width: mainCol.width + 12
-        height: Math.min(settingsPanel.implicitHeight + 16, bottomY - mainCol.y + 6)
+        readonly property real bottomY: mainCol.y + (secBottom.visible ? bottomSep.y - mainCol.spacing : mainCol.height)
+        x: 0
+        width: parent.width
+        height: Math.min(settingsPanel.implicitHeight + 7, bottomY - mainCol.y)
         y: bottomY - height
-        radius: 10
-        color: root.background
-        border.width: 1
-        border.color: root.faint
+        color: win.color.a < 1 ? root.background : win.color
+        // the separator line the panel always had above it
+        Rectangle { x: mainCol.x; width: mainCol.width; height: 1; color: root.faint }
         // swallow clicks and scrolls so they don't reach the sections underneath
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
         Flickable {
           id: qsFlick
           anchors.fill: parent
-          anchors.margins: 8
+          anchors.leftMargin: mainCol.x
+          anchors.rightMargin: mainCol.x
+          anchors.topMargin: 7
           clip: true
           contentHeight: settingsPanel.implicitHeight
           interactive: contentHeight > height
