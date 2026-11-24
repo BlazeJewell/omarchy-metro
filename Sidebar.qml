@@ -45,12 +45,18 @@ Item {
     var w = barConfig && barConfig.sidebarWidth
     return w > 120 ? Math.round(w) : 280
   }
+  // Omarchy widgets kept loaded (hidden) so their panels open docked in the
+  // sidebar: the stock bar's right section, plus any other panel a shortcut asks
+  // for (Super+Ctrl+Alt+E's world clock...), added the first time it's summoned.
+  property var extraPanelIds: []
+  property string pendingSummon: ""
   readonly property var widgetIds: {
     var list = barConfig && barConfig.sidebarWidgets
-    return Array.isArray(list) ? list : [
-      "omarchy.menu", "omarchy.system-update", "omarchy.agents", "omarchy.bluetooth",
+    var base = Array.isArray(list) ? list : [
+      "omarchy.menu", "omarchy.agents", "omarchy.bluetooth",
       "omarchy.network", "omarchy.audio", "omarchy.monitor", "omarchy.power"
     ]
+    return base.concat(root.extraPanelIds.filter(function(id) { return base.indexOf(id) === -1 }))
   }
   // Plugin widgets the sidebar shows in its bottom row: everything in the bar's
   // tray section, plus any third-party widget placed anywhere in the bar layout
@@ -99,7 +105,25 @@ Item {
   property string position: "left"
   readonly property bool vertical: true
   readonly property int barSize: sidebarWidth
+  // `omarchy toggle bar` (and the fullscreen-desktop toggle) hide the bar with a
+  // flag file; the sidebar then tucks away like auto-hide until it's needed.
   property bool barHidden: false
+  Process {
+    id: barHiddenProbe
+    running: true
+    command: ["bash", "-c", "[[ -f $HOME/.local/state/omarchy/toggles/bar-off ]] && echo yes || echo no"]
+    stdout: SplitParser { onRead: function(line) { root.barHidden = String(line).trim() === "yes" } }
+  }
+  FileView {
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/toggles"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: barHiddenProbe.running = true
+  }
+  ShellIpc {
+    target: "omarchy.bar"
+    function syncHidden(): void { barHiddenProbe.running = true }
+  }
   readonly property string fontFamily: Style.font.family
   readonly property color foreground: Commons.Color.bar.text
   readonly property color barForeground: Commons.Color.bar.text
@@ -148,21 +172,35 @@ Item {
     return items[0]
   }
   function summonBarWidget(id) {
+    id = String(id)
+    if (id === "omarchy.clock") { root.calMonth = new Date(); root.calendarOpen = true; return true }   // the clock's calendar
     var item = findPanelWidget(id)
-    if (!item || typeof item.open !== "function") return false
+    if (!item) {
+      // not hosted yet: load it, and open it once it's there
+      var reg = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+      if (!reg || !reg[id] || !reg[id].component) return false
+      root.pendingSummon = id
+      if (root.widgetIds.indexOf(id) === -1) root.extraPanelIds = root.extraPanelIds.concat([id])
+      return true
+    }
+    if (typeof item.open !== "function") return false
     item.open(); return true
   }
   function hideBarWidget(id) {
+    if (String(id) === "omarchy.clock") { root.calendarOpen = false; return true }
     var item = findPanelWidget(id)
     if (!item || typeof item.close !== "function") return false
     item.close(); return true
   }
   function isBarWidgetOpen(id) {
+    if (String(id) === "omarchy.clock") return root.calendarOpen
     var item = findPanelWidget(id)
     return !!item && item.opened === true
   }
+  // Super+Ctrl+1..9: the Nth widget that has a panel, as the stock bar counts them.
   function panelWidgetIdAt(region, index) {
-    var id = widgetIds[Math.round(Number(index)) - 1]
+    var withPanels = root.widgetIds.filter(function(id) { return root.noPanelWidgets.indexOf(String(id)) === -1 })
+    var id = withPanels[Math.round(Number(index)) - 1]
     return id ? String(id) : ""
   }
 
@@ -310,7 +348,7 @@ Item {
   }
 
 
-  // ---- system stats (one small poll every 2s) ----------------------------
+  // ---- system stats ---------------------------------------------------------
   property real cpu: 0
   property real mem: 0
   property real disk: 0
@@ -365,18 +403,73 @@ Item {
     return [Math.round(bits / 1e3).toString(), "Kbps"]
   }
 
+  // Read straight from /proc and sysfs (no processes) every refresh; disk use
+  // changes slowly, so df runs once a minute.
+  FileView { id: fvStat; path: "/proc/stat"; blockLoading: true; printErrors: false }
+  FileView { id: fvMem; path: "/proc/meminfo"; blockLoading: true; printErrors: false }
+  FileView { id: fvNet; path: "/proc/net/dev"; blockLoading: true; printErrors: false }
+  // GPU: an amdgpu card's sysfs files (the one with the most VRAM), found once
+  // by gpu.sh; on NVIDIA, nvidia-smi is polled instead.
+  property string gpuDir: ""
+  property string gpuTempFile: ""
+  property bool gpuNvidia: false
+  FileView { id: fvGpuBusy; path: root.gpuDir ? root.gpuDir + "/gpu_busy_percent" : ""; blockLoading: true; printErrors: false }
+  FileView { id: fvGpuUsed; path: root.gpuDir ? root.gpuDir + "/mem_info_vram_used" : ""; blockLoading: true; printErrors: false }
+  FileView { id: fvGpuTotal; path: root.gpuDir ? root.gpuDir + "/mem_info_vram_total" : ""; blockLoading: true; printErrors: false }
+  FileView { id: fvGpuTemp; path: root.gpuTempFile; blockLoading: true; printErrors: false }
   Process {
-    id: statsProc
-    command: ["sh", "-c",
-      "head -1 /proc/stat; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo; " +
-      "df -P / | awk 'NR==2{print \"disk\", $5}'; " +
-      "awk 'NR>2 && $1 != \"lo:\" {rx+=$2; tx+=$10} END {print \"net\", rx, tx}' /proc/net/dev; " +
-      "sh \"$1\"", "sh", Qt.resolvedUrl("gpu.sh").toString().replace("file://", "")]
+    running: true
+    command: ["sh", Qt.resolvedUrl("gpu.sh").toString().replace("file://", ""), "find"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        String(text).split("\n").forEach(function(l) {
+          var f = l.trim().split(" ")
+          if (f[0] === "amd") { root.gpuDir = f[1] || ""; root.gpuTempFile = f[2] || "" }
+          else if (f[0] === "nvidia") root.gpuNvidia = true
+        })
+      }
+    }
+  }
+  Process {
+    id: nvidiaProc
+    command: ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var f = String(text).split("\n")[0].split(",").map(function(v) { return Number(v.trim()) })
+        if (f.length >= 4 && !isNaN(f[0])) root.parseStats("gpu " + f.join(" "))
+      }
+    }
+  }
+  Process {
+    id: diskProc
+    command: ["sh", "-c", "df -P / | awk 'NR==2{print \"disk\", $5}'"]
     stdout: StdioCollector { onStreamFinished: root.parseStats(text) }
+  }
+  Timer { interval: 60000; running: true; repeat: true; triggeredOnStart: true; onTriggered: diskProc.running = true }
+  function pollStats() {
+    fvStat.reload(); fvMem.reload(); fvNet.reload()
+    var out = [String(fvStat.text()).split("\n")[0]]
+    String(fvMem.text()).split("\n").forEach(function(l) { if (/^(MemTotal|MemAvailable):/.test(l)) out.push(l) })
+    var rx = 0, tx = 0
+    String(fvNet.text()).split("\n").slice(2).forEach(function(l) {
+      var parts = l.split(":")
+      if (parts.length < 2 || parts[0].trim() === "lo") return
+      var n = parts[1].trim().split(/\s+/)
+      rx += Number(n[0]) || 0; tx += Number(n[8]) || 0
+    })
+    out.push("net " + rx + " " + tx)
+    if (root.gpuDir) {
+      fvGpuBusy.reload(); fvGpuUsed.reload(); fvGpuTotal.reload()
+      var temp = 0
+      if (root.gpuTempFile) { fvGpuTemp.reload(); temp = Math.round(Number(fvGpuTemp.text()) / 1000) || 0 }
+      out.push("gpu " + (Number(fvGpuBusy.text()) || 0) + " " + Math.round((Number(fvGpuUsed.text()) || 0) / 1048576)
+               + " " + Math.round((Number(fvGpuTotal.text()) || 0) / 1048576) + " " + temp)
+    } else if (root.gpuNvidia && !nvidiaProc.running) nvidiaProc.running = true
+    root.parseStats(out.join("\n"))
   }
   Timer {
     interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: true; repeat: true; triggeredOnStart: true
-    onTriggered: statsProc.running = true
+    onTriggered: root.pollStats()
   }
 
   SystemClock { id: clock; precision: root.setting("clock", "seconds") ? SystemClock.Seconds : SystemClock.Minutes }
@@ -577,10 +670,6 @@ Item {
     }
     return "uwsm-app -- gtk-launch " + Util.shellQuote(entry.id + ".desktop")
   }
-  function launchEntry(entry) {
-    var cmd = root.launchCommand(entry)
-    if (cmd) root.run(cmd)
-  }
 
   // Drop an app at a global point: beside the tiled window there, on the
   // side of it the point is on. An open app's window is moved there; one that
@@ -630,12 +719,14 @@ Item {
   readonly property string soloScript: Qt.resolvedUrl("solo.sh").toString().replace("file://", "")
   readonly property string minimizeScript: Qt.resolvedUrl("minimize.sh").toString().replace("file://", "")
   readonly property string fsmemScript: Qt.resolvedUrl("fsmem.sh").toString().replace("file://", "")
+  readonly property string restoreScript: Qt.resolvedUrl("restore.sh").toString().replace("file://", "")
+  function restoreCommand(ws, list) { return "bash " + Util.shellQuote(root.restoreScript) + " " + ws + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
   function fsRestore(list) { return "bash " + Util.shellQuote(root.fsmemScript) + " restore" + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
   // The next new window tiles instead of opening alone (Shift+click, drag-and-drop):
-  // a short-lived note read by ~/.config/hypr/sidebar_solo.lua.
+  // a short-lived note read by hypr/solo.lua.
   readonly property string tileNextFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-tile-next"
   function tileNextCommand() { return "echo $(( $(date +%s) + 30 )) > " + Util.shellQuote(root.tileNextFile) }
-  // Shift state, written by pass-through Shift binds in ~/.config/hypr/bindings.lua
+  // Shift state, written by pass-through Shift binds in hypr/binds.lua
   // (the sidebar has no keyboard focus, so it can't see modifiers itself).
   property bool shiftHeld: false
   FileView {
@@ -749,14 +840,11 @@ Item {
     }
     var mon = Hyprland.focusedMonitor
     var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
-    var steps = []
-    if (root.isMinimized(t)) {
-      steps.push("hl.dsp.window.move({ workspace = \"" + here + "\", follow = false, " + root.windowTarget(t) + " })")
-      steps.push("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })")
-    }
-    steps.push("hl.dsp.focus({ " + root.windowTarget(t) + " })")
-    steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
-    root.dispatchKeepCursor(steps, root.fsRestore([t]), tile ? "" : root.clearCommand([t]))
+    var head = tile ? "" : root.clearCommand([t])
+    if (root.isMinimized(t)) { root.dispatchKeepCursor([], root.restoreCommand(here, [t]), head); return }
+    var steps = ["hl.dsp.focus({ " + root.windowTarget(t) + " })",
+                 "hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })"]
+    root.dispatchKeepCursor(steps, root.fsRestore([t]), head)
   }
   function closeWindow(t) {
     if (t) root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.window.close({ " + root.windowTarget(t) + " })"))
@@ -793,15 +881,10 @@ Item {
       steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
     } else {
       if (!tile) head = root.clearCommand([])
-      hidden.forEach(function(t) {
-        steps.push("hl.dsp.window.move({ workspace = \"" + here + "\", follow = false, " + root.windowTarget(t) + " })")
-        // Parked off the left edge while minimized: tiling it again slides it in from there.
-        steps.push("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })")
-      })
-      var last = hidden[hidden.length - 1]
-      steps.push("hl.dsp.focus({ " + root.windowTarget(last) + " })")
+      // Parked off the left edge while minimized: tiling them again slides them in from there.
+      park = root.restoreCommand(here, hidden)
     }
-    if (!park) park = root.fsRestore(visible.length > 0 ? [visible[0]] : hidden)
+    if (!park) park = root.fsRestore([visible[0]])
     root.dispatchKeepCursor(steps, park, head)
   }
 
@@ -1034,7 +1117,7 @@ Item {
   // ---- quick settings -------------------------------------------------------
   property bool qsOpen: false
   property string qsMonitor: ""
-  property var qsState: ({ wifi: false, bt: false, night: false, idle: false, dnd: false, profile: "", netType: "", netName: "" })
+  property var qsState: ({ wifi: false, night: false, idle: false, profile: "", netType: "", netName: "" })
   function toggleQuickSettings(monitorName) {
     root.closeDockedPanel()
     if (root.qsOpen) { root.qsOpen = false; return }
@@ -1051,10 +1134,8 @@ Item {
     id: qsPoll
     command: ["bash", "-c",
       "echo wifi $(nmcli radio wifi 2>/dev/null); " +
-      "bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && echo bt on || echo bt off; " +
       "echo night $(omarchy-toggle-nightlight --status 2>/dev/null | jq -r .enabled); " +
       "echo idle $(omarchy-toggle-idle status 2>/dev/null | jq -r .enabled); " +
-      "echo dnd $(omarchy-shell notifications isDnd 2>/dev/null); " +
       "echo profile $(powerprofilesctl get 2>/dev/null); " +
       "nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null | awk -F: '$2==\"connected\" && $1!=\"loopback\" {print \"net\", $1, $3; exit}'"]
     stdout: StdioCollector {
@@ -1063,10 +1144,8 @@ Item {
         String(text).split("\n").forEach(function(line) {
           var f = line.trim().split(/\s+/)
           if (f[0] === "wifi") next.wifi = f[1] === "enabled"
-          else if (f[0] === "bt") next.bt = f[1] === "on"
           else if (f[0] === "night") next.night = f[1] === "true"
           else if (f[0] === "idle") next.idle = f[1] === "true"
-          else if (f[0] === "dnd") next.dnd = f[1] === "on"
           else if (f[0] === "profile") next.profile = f[1] || ""
           else if (f[0] === "net") { next.netType = f[1] || ""; next.netName = f.slice(2).join(" ") }
         })
@@ -1076,7 +1155,15 @@ Item {
   }
   Timer { id: qsRepoll; interval: 900; onTriggered: qsPoll.running = true }
 
+  // Do not disturb, live from Omarchy's notification service.
+  readonly property var notifService: root.shell && typeof root.shell.firstPartyServiceFor === "function"
+    ? root.shell.firstPartyServiceFor("omarchy.notifications") : null
+  readonly property bool dnd: !!root.notifService && root.notifService.doNotDisturb === true
   function qsToggle(key) {
+    if (key === "dnd" && root.notifService && typeof root.notifService.setDoNotDisturb === "function") {
+      root.notifService.setDoNotDisturb(!root.dnd)
+      return
+    }
     var s = Object.assign({}, root.qsState)
     var cmd = ""
     if (key === "wifi") cmd = "nmcli radio wifi " + (s.wifi ? "off" : "on")
@@ -1822,9 +1909,10 @@ Item {
     if (wins.length === 0) wins = item.windows || []
     var steps = wins.map(function(t) {
       return "hyprctl dispatch " + Util.shellQuote("hl.dsp.window.move({ workspace = \"" + ws + "\", follow = false, " + root.windowTarget(t) + " })")
-        + " >/dev/null; hyprctl dispatch " + Util.shellQuote("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })") + " >/dev/null"
+        + " >/dev/null; [[ $layout == floating ]] || hyprctl dispatch " + Util.shellQuote("hl.dsp.window.float({ action = \"off\", " + root.windowTarget(t) + " })") + " >/dev/null"
     })
-    if (steps.length) root.run(steps.join("; "))
+    // windows dropped on an Omarchy floating workspace stay floating
+    if (steps.length) root.run("layout=$(omarchy-hyprland-workspace-layout-current " + Number(ws) + " 2>/dev/null); " + steps.join("; "))
   }
 
   // ---- editor history, reset, profiles ---------------------------------------------
@@ -1911,7 +1999,7 @@ Item {
       color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
 
       // -- auto-hide: tucked away off the left edge until the pointer touches it --
-      readonly property bool autoHide: root.setting("general", "autohide") === true
+      readonly property bool autoHide: root.setting("general", "autohide") === true || root.barHidden
       readonly property bool keepOpen: (root.searching && root.searchMonitor === win.monitorName) || win.qsHere || win.trayHere
         || root.dockedPanel !== null || win.editHere || win.menuItem !== null || win.dragItem !== null || win.overviewHere
       property bool revealed: false
@@ -3951,9 +4039,9 @@ Item {
             Layout.fillWidth: true
             Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "NOTIFICATIONS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
             Text {
-              textFormat: Text.PlainText; text: root.qsState.dnd ? "silenced" : "silence"
-              color: dndMouse.containsMouse || root.qsState.dnd ? root.foreground : root.dim
-              font.family: root.fontFamily; font.pixelSize: 9; font.bold: root.qsState.dnd
+              textFormat: Text.PlainText; text: root.dnd ? "silenced" : "silence"
+              color: dndMouse.containsMouse || root.dnd ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 9; font.bold: root.dnd
               MouseArea { id: dndMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsToggle("dnd") }
             }
           }
@@ -4090,10 +4178,6 @@ Item {
             readonly property var windows: modelData.windows
             readonly property bool running: windows.length > 0
             readonly property bool focused: windows.some(function(t) { return t.activated })
-            readonly property var shownWindow: {
-              for (var i = 0; i < windows.length; i++) if (windows[i].activated) return windows[i]
-              return windows.length > 0 ? windows[0] : null
-            }
             readonly property bool multi: windows.length > 1 && root.setting("apps", "group")
             readonly property bool expanded: multi && !!root.expandedApps[modelData.key]
             width: appList.width
@@ -4651,6 +4735,10 @@ Item {
                 inject()
                 Qt.callLater(inject)
                 root.hostedItems = root.hostedItems.concat([host])
+                if (root.pendingSummon === host.moduleName) {
+                  root.pendingSummon = ""
+                  Qt.callLater(function() { if (host.item && typeof host.item.open === "function") host.item.open() })
+                }
               }
               Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== host })
             }
@@ -4856,10 +4944,10 @@ Item {
               }
 
               // Notifications
-              SectionHeader { sectionId: "notifications"; icon: ""; label: "Notifications"; status: root.qsState.dnd ? "Silenced" : "On" }
+              SectionHeader { sectionId: "notifications"; icon: ""; label: "Notifications"; status: root.dnd ? "Silenced" : "On" }
               SectionBody {
                 visible: root.qsSection === "notifications"
-                SwitchRow { label: "Do not disturb"; on: root.qsState.dnd; onToggled: root.qsToggle("dnd") }
+                SwitchRow { label: "Do not disturb"; on: root.dnd; onToggled: root.qsToggle("dnd") }
               }
 
               // Sidebar: which plugin widgets and tray icons show in the bottom row

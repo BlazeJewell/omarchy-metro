@@ -4,7 +4,7 @@
 # forward or restores it there, so it comes up full instead of tiling first.
 # They're lifted out of the layout right away; minimize.sh slides them off to
 # the left and hides them in the background.
-# (New windows are handled by ~/.config/hypr/sidebar_solo.lua.)
+# (New windows are handled by hypr/solo.lua.)
 set -u
 [[ ${1:-} == --clear ]] || exit 1
 ws=$2; shift 2; keep=" $* "

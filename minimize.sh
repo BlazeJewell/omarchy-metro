@@ -16,9 +16,17 @@ active=$(hyprctl activewindow -j | jq -r '.address // ""')
 ws=$(hyprctl clients -j | jq -r --arg a "$1" 'first(.[] | select(.address == $a) | .workspace.id) // empty')
 # a fullscreen window comes back fullscreen when restored (fsmem.sh)
 bash "$(dirname "$0")/fsmem.sh" save "$@"
-for a in "$@"; do d "hl.dsp.window.float({ action = \"on\", window = \"address:$a\" })"; done
 for a in "$@"; do
-  d "hl.dsp.window.resize({ x = $w, y = $h, window = \"address:$a\" })"
+  d "hl.dsp.window.float({ action = \"on\", window = \"address:$a\" })"
+  # the same tag Omarchy's minimize uses, so its dock knows where a window came from
+  [[ $ws =~ ^[0-9]+$ ]] && d "hl.dsp.window.tag({ tag = \"+omarchy-minimized-from-$ws\", window = \"address:$a\" })"
+done
+# On an Omarchy floating workspace windows keep their own size; on a tiled one
+# they slide out at full size.
+floating=false
+[[ $ws =~ ^[0-9]+$ && $(omarchy-hyprland-workspace-layout-current "$ws" 2>/dev/null) == floating ]] && floating=true
+for a in "$@"; do
+  $floating || d "hl.dsp.window.resize({ x = $w, y = $h, window = \"address:$a\" })"
   d "hl.dsp.window.move({ x = $x, y = $y, window = \"address:$a\" })"
 done
 sleep 0.45

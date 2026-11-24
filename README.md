@@ -49,9 +49,21 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | --- | --- |
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
 | `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
-| `*.sh` | helpers the sidebar runs (minimize, pairing, drag-to-place, refresh rate, GPU stats) |
+| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | link to Omarchy's own menu model, so the built-in menu follows Omarchy updates |
+
+## Works with stock Omarchy
+
+- Panel shortcuts open inside the sidebar: Super+Ctrl+A/B/D/N/P, Super+Ctrl+1…9
+  (counted like the stock bar), Super+Ctrl+Alt+D (calendar), Super+Ctrl+Alt+E
+  (world clock) and any other `{ panel = ... }` bind.
+- `omarchy toggle bar` and the fullscreen-desktop toggle tuck the sidebar away.
+- Minimized windows use Omarchy's `special:minimized` workspace and
+  `omarchy-minimized-from-N` tag, and Omarchy's floating workspace layout is
+  respected (windows stay floating and keep their size).
+- Do not disturb, indicators, update available and keyboard layout come from
+  Omarchy's own services and widgets.
 
 ## Keys
 

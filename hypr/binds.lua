@@ -31,6 +31,7 @@ o.bind("SUPER + Super_L", "Overview", "omarchy-shell jake.sidebar overview", { r
 o.rebind("SUPER + M", "Minimize window", "bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.sidebar/min-active.sh")
 
 -- Super+Alt+1..9 open (or bring forward) the sidebar's pinned apps, in order.
+-- (They replace Omarchy's "switch to group window N"; grouping is off here.)
 for n = 1, 9 do
-  o.bind("SUPER + ALT + code:" .. tostring(n + 9), "Pinned app " .. n, "omarchy-shell jake.sidebar launchPinned " .. n)
+  o.rebind("SUPER + ALT + code:" .. tostring(n + 9), "Pinned app " .. n, "omarchy-shell jake.sidebar launchPinned " .. n)
 end
