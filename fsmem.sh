@@ -7,12 +7,23 @@
 set -u
 mem="${XDG_RUNTIME_DIR:-/tmp}/jake-sidebar-fullscreen"
 touch "$mem"
-d() { hyprctl dispatch "$1" >/dev/null; }
+. "$(dirname "$0")/hbatch.sh"
+q=()
 case "${1:-}" in
+  note)
+    # fsmem.sh note address mode [address mode ...]: remember these as given
+    # (for callers that already have the window list, without asking hyprctl)
+    shift
+    while (( $# >= 2 )); do
+      grep -v "^$1 " "$mem" > "$mem.tmp"; mv "$mem.tmp" "$mem"
+      echo "$1 $2" >> "$mem"
+      shift 2
+    done
+    ;;
   save)
     shift
     if (( $# )); then
-      list=$(hyprctl clients -j | jq -r --arg a " $* " '.[] | select((.fullscreen // 0) > 0 and ($a | contains(" " + .address + " "))) | "\(.address) \(.fullscreen)"')
+      list=$(hyprctl clients -j | jq -r --arg a " $* " '.[] | .address as $x | select((.fullscreen // 0) > 0 and ($a | contains(" " + $x + " "))) | "\(.address) \(.fullscreen)"')
     else
       ws=$(hyprctl activeworkspace -j | jq -r .id)
       list=$(hyprctl clients -j | jq -r --argjson ws "$ws" '.[] | select(.workspace.id == $ws and (.fullscreen // 0) > 0) | "\(.address) \(.fullscreen)"')
@@ -30,7 +41,8 @@ case "${1:-}" in
       [[ -z $m ]] && continue
       grep -v "^$a " "$mem" > "$mem.tmp"; mv "$mem.tmp" "$mem"
       mode=fullscreen; [[ $m == 1 ]] && mode=maximized
-      d "hl.dsp.window.fullscreen({ mode = \"$mode\", action = \"set\", window = \"address:$a\" })"
+      q+=("dispatch hl.dsp.window.fullscreen({ mode = \"$mode\", action = \"set\", window = \"address:$a\" })")
     done
+    hbatch "${q[@]}"
     ;;
 esac

@@ -5,8 +5,11 @@
 set -u
 t=$1; w=$2; side=$3; ws=$4
 here=$(dirname "$0")
-d() { hyprctl dispatch "$1" >/dev/null; }
-pos=$(hyprctl cursorpos); cx=${pos%%,*}; cy=${pos##*, }
+# dispatches are queued and sent to Hyprland in one batch (flush)
+q=()
+d() { q+=("dispatch $1"); }
+. "$here/hbatch.sh"
+flush() { hbatch "${q[@]}"; q=(); }
 
 # clear the workspace except these two (they slide out to the left)
 bash "$here/solo.sh" --clear "$ws" "$t" "$w"
@@ -23,4 +26,4 @@ d "hl.dsp.layout(\"preselect $side\")"
 d "hl.dsp.window.move({ workspace = \"$ws\", follow = false, window = \"address:$w\" })"
 d "hl.dsp.window.float({ action = \"off\", window = \"address:$w\" })"
 d "hl.dsp.focus({ window = \"address:$w\" })"
-d "hl.dsp.cursor.move({ x = $cx, y = $cy })"
+flush

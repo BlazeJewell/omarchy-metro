@@ -720,16 +720,26 @@ Item {
     if (a.indexOf("0x") !== 0) a = "0x" + a
     return "window = \"address:" + a + "\""
   }
-  // Run Hyprland dispatches, then put the pointer back where it was
-  // (Hyprland warps it on focus and workspace changes).
+  // Run Hyprland dispatches without moving the pointer: every batch the sidebar
+  // sends turns cursor warps off for itself (hbatch.sh), so focusing a window
+  // from here doesn't drag the pointer out of the sidebar.
+  readonly property string hbatchScript: Qt.resolvedUrl("hbatch.sh").toString().replace("file://", "")
   function dispatchKeepCursor(steps, tail, head) {
-    var parts = ["pos=$(hyprctl cursorpos); x=${pos%%,*}; y=${pos##*, }"]
-    // remember a fullscreen window being switched away from (fsmem.sh)
-    parts.push("bash " + Util.shellQuote(root.fsmemScript) + " save")
-    if (head) parts.push(head)
-    steps.forEach(function(s) { parts.push("hyprctl dispatch " + Util.shellQuote(s) + " >/dev/null") })
+    var parts = []
+    var batch = steps.map(function(s) { return "dispatch " + s }).join(" ; ")
+    if (head) {
+      // solo.sh remembers fullscreen windows itself, and sends the steps in the
+      // same batch that starts the old windows sliding out, so the app brought
+      // forward moves in the same frame.
+      parts.push((batch ? "SIDEBAR_THEN=" + Util.shellQuote(batch) + " " : "") + head)
+    } else {
+      // remember a fullscreen window being switched away from (fsmem.sh);
+      // minimize.sh does this itself
+      if (String(tail || "").indexOf(root.minimizeScript) < 0) parts.push("bash " + Util.shellQuote(root.fsmemScript) + " save")
+      if (batch) parts.push(". " + Util.shellQuote(root.hbatchScript) + "; hbatch " + Util.shellQuote(batch))
+    }
     if (tail) parts.push(tail)
-    parts.push("hyprctl dispatch \"hl.dsp.cursor.move({ x = $x, y = $y })\" >/dev/null")
+    if (!parts.length) return
     var cmd = parts.join("; ")
     root.run(cmd)
   }

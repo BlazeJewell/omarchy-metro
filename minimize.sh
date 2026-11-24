@@ -1,40 +1,86 @@
 #!/bin/bash
 # Minimize windows by sliding them out to the left: each is lifted out of the
-# tiling layout, slides off the left edge at full size, then moves to
-# special:minimized. It stays parked there, so restoring it and handing it back
-# to the layout slides it in from the left again.
+# tiling layout where it stands (same size, same place), slides straight off
+# the left edge, then moves to special:minimized. It stays parked there, so
+# restoring it and handing it back to the layout slides it in from the left again.
+#
 # usage: minimize.sh <address>...
+#        minimize.sh --clear <workspace> [address to keep ...]
+#            the tiled windows on that workspace, except the ones kept (solo.sh)
+# SIDEBAR_THEN, if set, is more "dispatch ..." commands (;-separated) sent in the
+# same batch right after the slide starts, so whatever the sidebar brings
+# forward moves in the same frame as the old window starts leaving.
+#
+# Every hyprctl call costs tens of milliseconds, so the state is read in one
+# call and everything up to the start of the slide goes to Hyprland in one
+# batch; this returns as soon as the slide has started, and the hiding
+# afterwards runs in the background.
 set -u
-(( $# )) || exit 0
-d() { hyprctl dispatch "$1" >/dev/null; }
-mon=$(hyprctl monitors -j | jq -c '.[] | select(.focused == true)')
-read -r mx my mw mh rl rt rr rb < <(jq -r '(.scale) as $s |
-  "\(.x) \(.y) \(.width / $s | floor) \(.height / $s | floor) \(.reserved[0]) \(.reserved[1]) \(.reserved[2]) \(.reserved[3])"' <<<"$mon")
-w=$(( mw - rl - rr - 24 )); h=$(( mh - rt - rb - 24 ))
-x=$(( mx + rl - w - 40 )); y=$(( my + rt + 12 ))
-active=$(hyprctl activewindow -j | jq -r '.address // ""')
-ws=$(hyprctl clients -j | jq -r --arg a "$1" 'first(.[] | select(.address == $a) | .workspace.id) // empty')
-# a fullscreen window comes back fullscreen when restored (fsmem.sh)
-bash "$(dirname "$0")/fsmem.sh" save "$@"
-for a in "$@"; do
-  d "hl.dsp.window.float({ action = \"on\", window = \"address:$a\" })"
+here=$(dirname "$0")
+. "$here/hbatch.sh"
+then=${SIDEBAR_THEN:-}
+state=$(hyprctl -j --batch "monitors; clients" | jq -cs '{mon: .[0], clients: .[1]}')
+fsnote=()
+
+if [[ ${1:-} == --clear ]]; then
+  ws=$2; shift 2
+  # any fullscreen window on this workspace comes back fullscreen later (fsmem.sh)
+  read -ra fsnote < <(jq -r --argjson ws "$ws" '[.clients[] | select(.workspace.id == $ws and (.fullscreen // 0) > 0) | .address, (.fullscreen | tostring)] | join(" ")' <<<"$state")
+  sel=$(jq -c --argjson ws "$ws" --arg keep " $* " '[.clients[] | .address as $x
+    | select(.workspace.id == $ws and (.floating | not) and ($keep | contains(" " + $x + " ") | not))]' <<<"$state")
+else
+  sel=$(jq -c --arg a " $* " '[.clients[] | .address as $x | select($a | contains(" " + $x + " "))]' <<<"$state")
+  # a fullscreen window comes back fullscreen when restored (fsmem.sh)
+  read -ra fsnote < <(jq -r '[.[] | select((.fullscreen // 0) > 0) | .address, (.fullscreen | tostring)] | join(" ")' <<<"$sel")
+fi
+(( ${#fsnote[@]} )) && bash "$here/fsmem.sh" note "${fsnote[@]}"
+
+# One line per window: address, workspace, x, y, width, height, floating
+info=$(jq -r '.[] | "\(.address) \(.workspace.id) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1]) \(.floating)"' <<<"$sel")
+if [[ -z $info ]]; then
+  [[ -n $then ]] && hbatch "$then"
+  exit 0
+fi
+read -r mx rl active < <(jq -r '(first(.mon[] | select(.focused == true)) | "\(.x) \(.reserved[0])")
+  + " " + (first(.clients[] | select(.focusHistoryID == 0) | .address) // "-")' <<<"$state")
+ws=$(awk 'NR == 1 { print $2 }' <<<"$info")
+
+batch=() hide=() unanim=() addrs=()
+while read -r a wsid ax ay aw ah fl; do
+  w="window = \"address:$a\""
+  addrs+=("$a")
+  # Float a tiled window without it moving or changing size: animations off
+  # while Hyprland floats it, then straight back to its tile's size and place.
+  # (hypr/solo.lua does the same for windows it lifts.)
+  batch+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"1\", $w })")
+  if [[ $fl != true ]]; then
+    batch+=("dispatch hl.dsp.window.float({ action = \"on\", $w })"
+            "dispatch hl.dsp.window.resize({ x = $aw, y = $ah, $w })"
+            "dispatch hl.dsp.window.move({ x = $ax, y = $ay, $w })")
+  fi
   # the same tag Omarchy's minimize uses, so its dock knows where a window came from
-  [[ $ws =~ ^[0-9]+$ ]] && d "hl.dsp.window.tag({ tag = \"+omarchy-minimized-from-$ws\", window = \"address:$a\" })"
-done
-# On an Omarchy floating workspace windows keep their own size; on a tiled one
-# they slide out at full size.
-floating=false
-[[ $ws =~ ^[0-9]+$ && $(omarchy-hyprland-workspace-layout-current "$ws" 2>/dev/null) == floating ]] && floating=true
-for a in "$@"; do
-  $floating || d "hl.dsp.window.resize({ x = $w, y = $h, window = \"address:$a\" })"
-  d "hl.dsp.window.move({ x = $x, y = $y, window = \"address:$a\" })"
-done
-sleep 0.45
-for a in "$@"; do
-  d "hl.dsp.window.move({ workspace = \"special:minimized\", follow = false, window = \"address:$a\" })"
-  # Moving onto the special workspace re-places it; park it off the left edge again (unseen).
-  d "hl.dsp.window.move({ x = $x, y = $y, window = \"address:$a\" })"
-done
-# If the window in front was one of these, hand focus back to its workspace so
-# it doesn't stay on a hidden window (and the next app opened doesn't join it).
-if [[ " $* " == *" $active "* && -n $ws && $ws -ge 1 ]]; then d "hl.dsp.focus({ workspace = \"$ws\" })"; fi
+  [[ $wsid =~ ^[0-9]+$ ]] && batch+=("dispatch hl.dsp.window.tag({ tag = \"+omarchy-minimized-from-$wsid\", $w })")
+  # Park just past the left edge (behind the sidebar), at its own height and size.
+  px=$(( mx + rl - aw - 40 ))
+  batch+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"unset\", $w })"
+          "dispatch hl.dsp.window.move({ x = $px, y = $ay, $w })")
+  # Moving onto the special workspace re-places it on screen, and with
+  # animations on it would visibly slide back in for a moment; so animations
+  # are off for the hop, and it's parked off the left edge again so restoring
+  # slides it in from there.
+  hide+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"1\", $w })"
+         "dispatch hl.dsp.window.move({ workspace = \"special:minimized\", follow = false, $w })"
+         "dispatch hl.dsp.window.move({ x = $px, y = $ay, $w })")
+  unanim+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"unset\", $w })")
+done <<<"$info"
+# If the window in front was one of these (and nothing else is being brought
+# forward), hand focus back to its workspace so it doesn't stay on a hidden
+# window (and the next app opened doesn't join it).
+[[ -z $then && " ${addrs[*]} " == *" $active "* && $ws =~ ^[0-9]+$ && $ws -ge 1 ]] && unanim+=("dispatch hl.dsp.focus({ workspace = \"$ws\" })")
+
+[[ -n $then ]] && batch+=("$then")
+hbatch "${batch[@]}"
+IFS=';'
+setsid bash -c '. "$1"; sleep 0.45; hbatch "$2"; sleep 0.05; hbatch "$3"' _ \
+  "$here/hbatch.sh" "${hide[*]}" "${unanim[*]}" >/dev/null 2>&1 < /dev/null &
+exit 0

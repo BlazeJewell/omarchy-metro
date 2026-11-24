@@ -5,11 +5,14 @@
 #   window-address  an open window of the app to move there, or "-"
 #   launch-command  command that starts the app when it has no window, or "-"
 set -u
+here=$(dirname "$0")
 X=${1%.*}; Y=${2%.*}; WIN=$3; LAUNCH=$4
 
-pos=$(hyprctl cursorpos); cx=${pos%%,*}; cy=${pos##*, }
-restore_cursor() { hyprctl dispatch "hl.dsp.cursor.move({ x = $cx, y = $cy })" >/dev/null; }
-d() { hyprctl dispatch "$1" >/dev/null; }
+# dispatches are queued and sent to Hyprland in one batch (flush)
+q=()
+d() { q+=("dispatch $1"); }
+. "$here/hbatch.sh"
+flush() { hbatch "${q[@]}"; q=(); }
 
 ws=$(hyprctl activeworkspace -j | jq -r .id)
 read -r target side < <(hyprctl clients -j | jq -r --argjson x "$X" --argjson y "$Y" --argjson ws "$ws" --arg self "$WIN" '
@@ -34,6 +37,7 @@ elif [[ $LAUNCH != "-" ]]; then
     d "hl.dsp.focus({ window = \"address:$target\" })"
     d "hl.dsp.layout(\"preselect $side\")"
   fi
+  flush
   bash -c "$LAUNCH" &
 fi
-restore_cursor
+flush

@@ -165,7 +165,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | --- | --- |
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
 | `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
-| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
+| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
 | `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | copy of Omarchy's own menu model (`/usr/share/omarchy/shell/plugins/menu/MenuModel.js`); plugins may not contain symlinks, so re-copy it if Omarchy changes it |

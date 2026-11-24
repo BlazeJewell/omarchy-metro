@@ -66,10 +66,62 @@ hl.on("window.open", function(window)
     end
   end
 
-  local addresses = {}
-  for _, other in ipairs(others) do
-    hl.dispatch(hl.dsp.window.float({ action = "on", window = "address:" .. other.address }))
-    table.insert(addresses, other.address)
+  -- The same slide as minimize.sh, done right here so it starts in the same
+  -- frame the new window opens (no script to start first). Each window is
+  -- lifted where it stands (animations off while Hyprland floats it, then
+  -- straight back to its tile's size and place), slides off the left edge as
+  -- it is, and once it's gone hops to special:minimized, unseen.
+  local function xy(v)
+    if type(v) ~= "table" then return nil end
+    return v.x or v[1], v.y or v[2]
   end
-  hl.exec_cmd("bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.sidebar/minimize.sh " .. table.concat(addresses, " "))
+  local mon = window.monitor
+  local mx = mon and (mon.x or xy(mon.position))
+  local rl = mon and type(mon.reserved) == "table" and (mon.reserved.left or mon.reserved[1]) or 0
+  local parked, fallback = {}, {}
+  for _, other in ipairs(others) do
+    local w = "address:" .. other.address
+    local ax, ay = xy(other.at)
+    local aw, ah = xy(other.size)
+    hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = w }))
+    hl.dispatch(hl.dsp.window.float({ action = "on", window = w }))
+    if aw and ah and ax and ay and mx then
+      hl.dispatch(hl.dsp.window.resize({ x = aw, y = ah, window = w }))
+      hl.dispatch(hl.dsp.window.move({ x = ax, y = ay, window = w }))
+      -- the same tag Omarchy's minimize uses, so its dock knows where a window came from
+      hl.dispatch(hl.dsp.window.tag({ tag = "+omarchy-minimized-from-" .. ws.id, window = w }))
+      hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = w }))
+      -- park just past the left edge (behind the sidebar), at its own height and size
+      local px = math.floor(mx + rl - aw - 40)
+      hl.dispatch(hl.dsp.window.move({ x = px, y = ay, window = w }))
+      table.insert(parked, { w = w, x = px, y = ay })
+    else
+      table.insert(fallback, other.address)
+    end
+  end
+  if #parked > 0 then
+    hl.timer(function()
+      -- moving a focused window away refocuses another; don't let that move the pointer
+      local warps_off = hl.get_config("cursor.no_warps")
+      hl.config({ cursor = { no_warps = true } })
+      for _, p in ipairs(parked) do
+        -- Moving onto the special workspace re-places it on screen; animations
+        -- off so it doesn't visibly slide back, then parked off the left edge
+        -- again so restoring slides it in from there.
+        hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = p.w }))
+        hl.dispatch(hl.dsp.window.move({ workspace = "special:minimized", follow = false, window = p.w }))
+        hl.dispatch(hl.dsp.window.move({ x = p.x, y = p.y, window = p.w }))
+      end
+      hl.config({ cursor = { no_warps = warps_off == true } })
+      hl.timer(function()
+        for _, p in ipairs(parked) do
+          hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = p.w }))
+        end
+      end, { timeout = 50, type = "oneshot" })
+    end, { timeout = 450, type = "oneshot" })
+  end
+  -- couldn't read a window's geometry here: let minimize.sh do it
+  if #fallback > 0 then
+    hl.exec_cmd("bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.sidebar/minimize.sh " .. table.concat(fallback, " "))
+  end
 end)
