@@ -213,7 +213,7 @@ Item {
   transformOrigin: Item.TopLeft
   // jake.sidebar: arrive from, and leave into, the sidebar on the left.
   property real slide: 1
-  transform: Translate { x: -card.slide * (card.width + Style.gapsOut) }
+  transform: Translate { x: -card.slide * (card.width + 12) }
   NumberAnimation on slide { id: slideIn; running: false; to: 0; duration: Style.duration(260); easing.type: Easing.OutCubic }
   NumberAnimation { id: slideOut; target: card; property: "slide"; to: 1; duration: Style.duration(200); easing.type: Easing.InCubic }
   Component.onCompleted: slideIn.start()
@@ -232,9 +232,16 @@ Item {
     width: body.width
     height: body.height
     radius: Style.cornerRadius
-    color: Commons.Color.notifications.background
-    borderSpec: Border.surfaceSpec("notifications", "border", Commons.Color.notifications.border,
-                                   Math.max(1, Style.space(2)))
+    // jake.sidebar: drawn like a section of the panel it sits in.
+    color: Commons.Color.bar.background
+    borderSpec: Border.none()
+  }
+  Rectangle {
+    anchors.fill: plate
+    radius: plate.radius
+    color: "transparent"
+    border.width: 1
+    border.color: Qt.rgba(Commons.Color.bar.text.r, Commons.Color.bar.text.g, Commons.Color.bar.text.b, 0.16)
   }
 
   // The keyboard's card is tinted with the theme's hover fill, buttons and all.

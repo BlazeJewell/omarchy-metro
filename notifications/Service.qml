@@ -74,7 +74,29 @@ Item {
   function marginsFor(screenName) {
     return Delivery.deckMargins(barPosition, Delivery.barThickness(barRef, screenName, defaultBarSize), Style.gapsOut)
   }
-  readonly property int notificationWidth: Style.space(380)
+  // jake.sidebar: notifications appear inside the sidebar, at its top, as wide
+  // as the panel less a small inset on each side.
+  readonly property int panelInset: 10
+  readonly property int panelWidth: Math.round(Number(barRef && barRef.barSize) || 0)
+  readonly property bool inPanel: barPosition === "left" && panelWidth > 0 && !(barRef && barRef.barHidden)
+  readonly property int notificationWidth: inPanel ? Math.max(180, panelWidth - panelInset * 2) : Style.space(380)
+  // How far the sidebar moves its content down to make room for the cards.
+  // The sidebar can't reach this service (plugins see only a facade, and this
+  // clone only sees a copy of the bar), so the room it needs is passed through a
+  // small file the sidebar watches: "<monitor> <px>". Only the target is written,
+  // never the animation in between; the sidebar animates to it.
+  readonly property int panelSpace: {
+    var h = Number(layout && layout.height) || 0
+    return inPanel && toasts.count > 0 && h > 0 ? Math.round(h + panelInset * 2) : 0
+  }
+  readonly property string panelNote: targetDisplayName + " " + panelSpace
+  onPanelNoteChanged: panelFile.setText(panelNote + "\n")
+  Timer { running: true; interval: 1; onTriggered: panelFile.setText(service.panelNote + "\n") }   // no stale room after a restart
+  FileView {
+    id: panelFile
+    path: Quickshell.env("XDG_RUNTIME_DIR") + "/jake-sidebar-notifications"
+    printErrors: false
+  }
 
   // ---------------------------------------------------- fullscreen windows
   //
@@ -1520,9 +1542,9 @@ Item {
       exclusionMode: ExclusionMode.Ignore
 
       // Constant width and full height, so the buffer is allocated once.
-      // jake.sidebar: docked top-left, just right of the sidebar.
+      // jake.sidebar: over the top of the sidebar, on the left edge.
       anchors { top: true; bottom: true; left: true }
-      implicitWidth: surface.margins.left + clipper.width + Style.space(10)
+      implicitWidth: clipper.width + Style.space(10)
 
       mask: Region { item: surface.showingNotifications ? deck : null }
 
@@ -1536,21 +1558,37 @@ Item {
       Item {
         id: clipper
         visible: surface.showingNotifications
-        // Starts at the sidebar's edge and clips there, so cards slide out
-        // from behind the panel.
+        // The panel's own width, clipped at its right edge, so cards slide in
+        // from the screen edge and never spill past the panel.
         anchors.left: parent.left
-        anchors.leftMargin: surface.margins.left
         anchors.top: parent.top
-        anchors.topMargin: surface.margins.top
-        // Room for the arrival's scale animation, and the gap from the panel.
         readonly property int motionInset: Style.spacing.sm
-        width: service.notificationWidth + motionInset + surface.margins.edge
+        width: service.notificationWidth + service.panelInset * 2
         height: deck.y + deck.height + motionInset
         clip: true
 
+        // A strip of panel behind the cards, so what's under them doesn't peek
+        // through the gaps: the notifications read as a section of the panel.
+        Rectangle {
+          id: backing
+          visible: service.inPanel
+          property real shown: toasts.count > 0 ? 1 : 0
+          Behavior on shown { NumberAnimation { duration: Style.duration(240); easing.type: Easing.OutCubic } }
+          x: -(1 - shown) * width
+          width: parent.width
+          height: deck.y + service.deckHeight + service.panelInset
+          color: Commons.Color.bar.background
+          Rectangle {
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: service.panelInset; rightMargin: service.panelInset }
+            height: 1
+            color: Qt.rgba(Commons.Color.bar.text.r, Commons.Color.bar.text.g, Commons.Color.bar.text.b, 0.12)
+          }
+        }
+
         Item {
           id: deck
-          x: surface.margins.edge
+          x: service.panelInset
+          y: service.panelInset
           width: service.notificationWidth
           height: service.deckHeight
 

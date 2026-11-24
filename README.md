@@ -20,7 +20,8 @@ in the middle of your work.
 - **The Super+Space menu types into the panel.** The full Omarchy menu, app search and the
   clipboard all open there instead of in a centred popup.
 - **Quick settings slide over the panel itself**: network, sound, display, power and updates.
-- **Notifications dock next to the panel** at the top left and slide out from behind it.
+- **Notifications appear inside the panel**, at the top. They slide in from the edge, and the
+  rest of the panel moves down to make room until they're gone.
 - **Any Omarchy panel can be a section**, such as media, notifications or AI agents, and its
   keyboard shortcut opens it in place.
 
@@ -75,7 +76,7 @@ services, so updates keep working.
 
 ![One app at a time demo](docs/demo-one-app.gif)
 
-**Notifications dock top-left and slide out from the panel**
+**Notifications appear inside the panel, and everything below makes room for them**
 
 ![Notifications demo](docs/demo-notifications.gif)
 
@@ -165,7 +166,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
 | `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
 | `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
-| `notifications/` | a copy of Omarchy's notification service, changed so popups dock top-left against the sidebar and slide out from it (installed as the `jake.notifications` plugin) |
+| `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | link to Omarchy's own menu model, so the built-in menu follows Omarchy updates |
 

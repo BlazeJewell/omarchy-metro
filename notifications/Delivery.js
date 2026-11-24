@@ -93,9 +93,6 @@ function deckMargins(barPosition, thickness, gap) {
   if (!isFinite(bar)) bar = 0
   return {
     top: (position === "top" ? bar : 0) + edge,
-    right: (position === "right" ? bar : 0) + edge,
-    // jake.sidebar: the deck hangs from the top-left, against the sidebar.
-    left: position === "left" ? bar : 0,
-    edge: edge
+    right: (position === "right" ? bar : 0) + edge
   }
 }

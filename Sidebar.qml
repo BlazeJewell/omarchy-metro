@@ -1177,6 +1177,22 @@ Item {
   }
   Timer { id: qsRepoll; interval: 900; onTriggered: qsPoll.running = true }
 
+  // Room the in-panel notifications (jake.notifications, see notifications/)
+  // need at the top of the panel; that service writes "<monitor> <px>" here.
+  property real notifSpace: 0
+  property string notifSpaceMonitor: ""
+  FileView {
+    path: Quickshell.env("XDG_RUNTIME_DIR") + "/jake-sidebar-notifications"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      var parts = String(text()).trim().split(/\s+/)
+      root.notifSpaceMonitor = parts[0] || ""
+      root.notifSpace = Math.max(0, Number(parts[1]) || 0)
+    }
+  }
+
   // Do not disturb, live from Omarchy's notification service.
   readonly property var notifService: root.shell && typeof root.shell.firstPartyServiceFor === "function"
     ? root.shell.firstPartyServiceFor("omarchy.notifications") : null
@@ -2016,6 +2032,9 @@ Item {
       // Over a fullscreen window the sidebar slides in with the overview as it opens.
       // On close it waits: the previews zoom back first, and only once the overview is
       // gone does the sidebar slide out (fsOut), so nothing moves at the same time.
+      readonly property real notifSpace: root.notifSpaceMonitor === win.monitorName ? root.notifSpace : 0
+      property real notifPush: notifSpace
+      Behavior on notifPush { NumberAnimation { duration: Style.duration(200); easing.type: Easing.OutCubic } }
       readonly property bool fsAlone: win.fsHere && !(root.searching && root.searchMonitor === win.monitorName)
                                       && !win.qsHere && !win.trayHere && !win.editHere
       property real fsOut: 0
@@ -3587,6 +3606,9 @@ Item {
         anchors.fill: parent
         anchors.margins: 16
         anchors.bottomMargin: 10
+        // Notifications appear at the top of the panel (jake.notifications);
+        // everything below moves down to make room for them.
+        anchors.topMargin: 16 + win.notifPush
         spacing: 14
 
         // -- clock --------------------------------------------------------
