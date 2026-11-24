@@ -137,8 +137,6 @@ The installer:
 - puts the plugin in `~/.config/omarchy/plugins/jake.sidebar`
 - loads `hypr/` (Super+Space and other bindings, one app at a time, animations)
   with one line in `~/.config/hypr/hyprland.lua` (`hypr-link.sh`)
-- copies the saved layout from `layout/` into `~/.config/omarchy`
-  (pass `--keep-layout` to keep the machine's own), backing up what it replaces
 - switches the bar to the sidebar (`omarchy bar use jake.sidebar`) and turns off
   Omarchy's dock
 
@@ -151,8 +149,12 @@ Omarchy's dock, and docks notifications top-left. The dock and notification part
 happens once per install, so turning the dock back on later sticks; removing and
 re-adding the plugin sets it up again. The Hyprland line skips itself if the plugin
 folder is removed, and `hypr/` only loads while the sidebar is the bar in use, so
-disabling it gives Super+Space and the rest back to Omarchy. The one thing it
-doesn't do is copy the saved layout from `layout/`; run `install.sh` for that.
+disabling it gives Super+Space and the rest back to Omarchy.
+
+Either way the sidebar starts with its default layout: the standard sections, and
+the apps pinned in your Omarchy dock (Omarchy's defaults if you never changed
+them) until you pin or unpin something in the sidebar. Your layout is your own;
+installing never copies one in. To carry yours between machines, see below.
 
 ## Keeping machines in sync
 

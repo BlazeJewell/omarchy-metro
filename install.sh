@@ -3,26 +3,23 @@
 #
 #   gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar && ~/.config/omarchy/plugins/jake.sidebar/install.sh
 #   # or, from a checkout:
-#   ./install.sh [--keep-layout]
+#   ./install.sh
 #
 # What it does:
 #   1. puts the plugin at ~/.config/omarchy/plugins/jake.sidebar (clone, or pull if it's there)
 #   2. loads the Hyprland side (keybindings, animations, window rules) from
 #      ~/.config/hypr/hyprland.lua with one line (hypr-link.sh; the sidebar also
 #      does this itself when it starts, so `omarchy plugin add` gets it too)
-#   3. copies the saved sidebar layout (sections, pins, hidden icons, profiles) from
-#      layout/ into ~/.config/omarchy, backing up anything it replaces
-#      (skip with --keep-layout)
-#   4. switches the bar to the sidebar, turns off Omarchy's dock, and docks
+#   3. switches the bar to the sidebar, turns off Omarchy's dock, and docks
 #      notifications top-left (jake.notifications)
+# The sidebar starts with its default layout (pins from Omarchy's dock). Your own
+# layout is never touched; to bring a saved one over from another machine, use
+# ./sync.sh load.
 set -euo pipefail
 
 REPO_URL="${JAKE_SIDEBAR_REPO:-https://github.com/BlazeJewell/omarchy-sidebar.git}"
 DEST="$HOME/.config/omarchy/plugins/jake.sidebar"
 HYPR="$HOME/.config/hypr"
-CFG="$HOME/.config/omarchy"
-KEEP_LAYOUT=false
-[[ ${1:-} == --keep-layout ]] && KEEP_LAYOUT=true
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 need() { command -v "$1" >/dev/null || { echo "Missing $1 — is this an Omarchy machine?" >&2; exit 1; }; }
@@ -50,18 +47,7 @@ fi
 say "Loading the Hyprland config"
 bash "$DEST/hypr-link.sh"
 
-# 3. the saved layout
-if ! $KEEP_LAYOUT; then
-  for f in "$DEST"/layout/sidebar-*.json; do
-    [[ -e $f ]] || continue
-    name=$(basename "$f")
-    [[ -e $CFG/$name ]] && ! cmp -s "$f" "$CFG/$name" && cp "$CFG/$name" "$CFG/$name.bak.$(date +%s)"
-    cp "$f" "$CFG/$name"
-    say "Layout: $name"
-  done
-fi
-
-# 4. bar + dock + notifications
+# 3. bar + dock + notifications
 say "Switching the bar to the sidebar"
 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
 omarchy bar use jake.sidebar

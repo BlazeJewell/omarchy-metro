@@ -508,6 +508,7 @@ Item {
   // shell.json makes the shell rebuild the bar, which shoves windows around.
   readonly property string pinsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-pins.json"
   property var savedPins: []
+  property bool pinsSaved: false   // the file exists: pins are the user's own
   property var pendingPins: null
   FileView {
     path: root.pinsPath
@@ -515,11 +516,37 @@ Item {
     printErrors: false
     onFileChanged: reload()
     onLoaded: {
-      try { var v = JSON.parse(text()); if (Array.isArray(v)) root.savedPins = v } catch (e) {}
+      try { var v = JSON.parse(text()); if (Array.isArray(v)) { root.savedPins = v; root.pinsSaved = true } } catch (e) {}
       root.pendingPins = null
     }
   }
-  readonly property var pinnedIds: root.pendingPins || root.savedPins
+  // Until something is pinned or unpinned here, start from the apps pinned in
+  // Omarchy's dock, which the sidebar replaces: yours from shell.json, or
+  // Omarchy's defaults. (Read from the files: the host only hands a bar its bar
+  // settings.) Ones that aren't installed are skipped (appItems).
+  property var userDockPins: null
+  property var defaultDockPins: null
+  function dockPinsFrom(text) {
+    try { var v = JSON.parse(text); return v && v.dock && Array.isArray(v.dock.pinned) ? v.dock.pinned : null } catch (e) { return null }
+  }
+  FileView {
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.userDockPins = root.dockPinsFrom(text())
+  }
+  FileView {
+    path: (root.omarchyPath || "/usr/share/omarchy") + "/config/omarchy/shell.json"
+    printErrors: false
+    onLoaded: root.defaultDockPins = root.dockPinsFrom(text())
+  }
+  readonly property var dockPins: {
+    var list = root.userDockPins || root.defaultDockPins || []
+    return list.map(function(id) { id = String(id || "").trim(); return id.slice(-8) === ".desktop" ? id.slice(0, -8) : id })
+      .filter(function(id, i, a) { return id && a.indexOf(id) === i })
+  }
+  readonly property var pinnedIds: root.pendingPins || (root.pinsSaved ? root.savedPins : root.dockPins)
 
   function entryIdFor(appId) {
     var e = DesktopEntries.heuristicLookup(appId)
