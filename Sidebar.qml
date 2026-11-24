@@ -1513,6 +1513,7 @@ Item {
     function onRawEvent(event) {
       var n = String(event.name)
       if (n.indexOf("monitoradded") === 0 || n.indexOf("monitorremoved") === 0 || n === "configreloaded") displayRepoll.restart()
+      if (n === "configreloaded") themeProc.running = true
     }
   }
   readonly property string refreshScript: Qt.resolvedUrl("refresh.sh").toString().replace("file://", "")
@@ -1819,7 +1820,7 @@ Item {
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
     bottom: { plugins: true },
     tray: { show: true, align: "right" },
-    general: { background: "solid", autohide: false }
+    general: { background: "solid", autohide: false, windowRounding: 10, windowBorder: 0, lookScope: "windows" }
   })
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
   property var userSettings: ({})
@@ -1869,6 +1870,58 @@ Item {
   }
   function writeSettings() {
     Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(root.userSettings, null, 2), root.settingsPath])
+  }
+  // Window corners and borders (Whole sidebar › Windows): applied to Hyprland
+  // as they change, previews included; hypr/look.lua reads the saved values
+  // whenever Hyprland loads its config.
+  // "Apply to": windows / sidebar / both. With "sidebar", windows get back what
+  // your Hyprland config gives them (recorded by hypr/look.lua as it loads).
+  readonly property string lookScope: String(root.setting("general", "lookScope") || "windows")
+  readonly property int lookRounding: Number(root.setting("general", "windowRounding")) || 0
+  readonly property int lookBorder: Number(root.setting("general", "windowBorder")) || 0
+  property var windowBase: null       // [border, rounding] from your config
+  FileView {
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-window-base"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var v = String(text()).trim().split(/\s+/).map(Number); if (v.length === 2 && !isNaN(v[0]) && !isNaN(v[1])) root.windowBase = v }
+  }
+  readonly property string windowLook: JSON.stringify(root.lookScope === "sidebar"
+    ? (root.windowBase ? [root.windowBase[1], root.windowBase[0]] : null)
+    : [root.lookRounding, root.lookBorder])
+  function applyWindowLook() {
+    var v = JSON.parse(root.windowLook)
+    if (!v) return
+    Quickshell.execDetached(["hyprctl", "eval", "hl.config({ decoration = { rounding = " + v[0] + " }, general = { border_size = " + v[1] + " } })"])
+  }
+  onWindowLookChanged: applyWindowLook()
+  // and once everything's loaded after the shell starts (a change can't be missed then)
+  Timer { interval: 2500; running: true; onTriggered: root.applyWindowLook() }
+  // The sidebar drawn like a window (Apply to: sidebar / both): inset by
+  // Hyprland's gap, rounded, with your theme's window border colour(s).
+  readonly property bool panelStyled: root.lookScope !== "windows" && (root.lookRounding > 0 || root.lookBorder > 0)
+  property var themeBorder: ["#33ccff", "#00ff99"]
+  property real themeBorderAngle: 45
+  property int hyprGap: 10
+  Process {
+    id: themeProc
+    command: ["bash", "-c", "hyprctl getoption general:col.active_border | head -1; hyprctl getoption general:gaps_out | head -1"]
+    running: true
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var lines = String(text).split("\n")
+        var cols = (lines[0] || "").replace(/^[^:]*:/, "").trim().split(/\s+/)
+        var out = [], angle = 0
+        cols.forEach(function(c) {
+          if (/^[0-9a-fA-F]{8}$/.test(c)) out.push("#" + c)
+          else { var m = /^(-?\d+)deg$/.exec(c); if (m) angle = parseInt(m[1]) }
+        })
+        if (out.length) { root.themeBorder = out; root.themeBorderAngle = angle }
+        var g = /(\d+)/.exec((lines[1] || "").replace(/^[^:]*:/, ""))
+        if (g) root.hyprGap = parseInt(g[1])
+      }
+    }
   }
   function setSetting(section, key, value) {
     var next = JSON.parse(JSON.stringify(root.userSettings))
@@ -2327,7 +2380,38 @@ Item {
                                       : win.fsLeaving ? win.fsOut
                                       : win.overviewHere && root.overviewOpen ? 1 - root.ovProgress : 0
       margins.left: win.tucked ? -(root.sidebarWidth - 4) : -Math.round(root.sidebarWidth * win.fsSlide)
-      color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
+      readonly property color panelColor: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
+      color: root.panelStyled ? "transparent" : panelColor
+      // drawn like a window: inset by Hyprland's gap (top, left, bottom), rounded, bordered
+      readonly property int panelInset: root.panelStyled ? root.hyprGap : 0
+      readonly property int panelBorderW: root.panelStyled ? root.lookBorder : 0
+      readonly property real panelInnerX: panelInset + panelBorderW
+      readonly property real panelInnerW: width - panelInset - 2 * panelBorderW
+      Rectangle {
+        id: panelFrame
+        visible: root.panelStyled
+        z: -10
+        x: win.panelInset; y: win.panelInset
+        width: win.width - win.panelInset
+        height: win.height - 2 * win.panelInset
+        radius: root.lookRounding
+        // the border: the theme's colour, or its gradient
+        gradient: root.themeBorder.length > 1 && win.panelBorderW > 0 ? borderGrad : null
+        color: win.panelBorderW > 0 ? root.themeBorder[0] : win.panelColor
+        Gradient {
+          id: borderGrad
+          orientation: Math.abs(root.themeBorderAngle % 180) < 45 || Math.abs(root.themeBorderAngle % 180) > 135 ? Gradient.Horizontal : Gradient.Vertical
+          GradientStop { position: 0; color: root.themeBorder[0] }
+          GradientStop { position: 1; color: root.themeBorder[root.themeBorder.length - 1] }
+        }
+        Rectangle {
+          visible: win.panelBorderW > 0
+          anchors.fill: parent
+          anchors.margins: win.panelBorderW
+          radius: Math.max(0, root.lookRounding - win.panelBorderW)
+          color: win.panelColor
+        }
+      }
 
       // -- auto-hide: tucked away off the left edge until the pointer touches it --
       readonly property bool autoHide: root.setting("general", "autohide") === true || root.barHidden
@@ -3274,9 +3358,9 @@ Item {
           onHeightChanged: win.pinRev++
           // the sidebar's background behind it, edge to edge, so what scrolls goes underneath
           Rectangle {
-            x: -sideFlick.x
+            x: win.panelInnerX - sideFlick.x
             y: -mainCol.spacing / 2
-            width: win.width
+            width: win.panelInnerW
             height: parent.height + mainCol.spacing
             color: win.color.a < 1 ? root.background : win.color
           }
@@ -4205,6 +4289,18 @@ Item {
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
+            // the windows' look (Hyprland), not just the sidebar's
+            EdHeading { text: "CORNERS & BORDERS" }
+            OptRow { label: "Apply to"; options: [["windows", "windows"], ["sidebar", "sidebar"], ["both", "both"]]; current: root.lookScope; onPicked: function(v) { root.setSetting("general", "lookScope", v) } }
+            OptRow { label: "Corners"; options: [[0, "square"], [6, "6"], [10, "10"], [16, "16"]]; current: Number(root.setting("general", "windowRounding")); onPicked: function(v) { root.setSetting("general", "windowRounding", v) } }
+            OptRow { label: "Borders"; options: [[0, "none"], [1, "1"], [2, "2"], [3, "3"]]; current: Number(root.setting("general", "windowBorder")); onPicked: function(v) { root.setSetting("general", "windowBorder", v) } }
+            Text {
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: root.lookScope === "windows" ? "Your windows' corners and borders."
+                  : root.lookScope === "sidebar" ? "The sidebar is drawn like a window, in your theme's border colour; windows keep your Hyprland config's look."
+                  : "Windows and the sidebar alike, in your theme's border colour."
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
             // profiles: saved layouts to switch between
             EdHeading { text: "PROFILES" }
             Flow {
@@ -4281,8 +4377,10 @@ Item {
       Flickable {
         id: sideFlick
         anchors.fill: parent
-        anchors.margins: 16
-        anchors.bottomMargin: 10
+        anchors.leftMargin: 16 + win.panelInnerX
+        anchors.topMargin: 16 + win.panelInnerX
+        anchors.rightMargin: 16 + win.panelBorderW
+        anchors.bottomMargin: 10 + win.panelInnerX
         contentWidth: width
         contentHeight: mainCol.height
         clip: true
@@ -5702,8 +5800,8 @@ Item {
         visible: win.qsHere
         z: 20
         readonly property real bottomY: win.bottomEdgeY
-        x: 0
-        width: parent.width
+        x: win.panelInnerX
+        width: win.panelInnerW
         height: Math.min(settingsPanel.implicitHeight + 7, bottomY - sideFlick.y)
         y: bottomY - height
         color: win.color.a < 1 ? root.background : win.color
