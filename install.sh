@@ -12,7 +12,8 @@
 #   3. copies the saved sidebar layout (sections, pins, hidden icons, profiles) from
 #      layout/ into ~/.config/omarchy, backing up anything it replaces
 #      (skip with --keep-layout)
-#   4. switches the bar to the sidebar and turns off Omarchy's dock
+#   4. switches the bar to the sidebar, turns off Omarchy's dock, and docks
+#      notifications top-left (jake.notifications)
 set -euo pipefail
 
 REPO_URL="${JAKE_SIDEBAR_REPO:-https://github.com/BlazeJewell/omarchy-sidebar.git}"
@@ -67,11 +68,23 @@ if ! $KEEP_LAYOUT; then
   done
 fi
 
-# 4. bar + dock
+# Notifications dock top-left against the sidebar: notifications/ is a clone of
+# omarchy.notifications, linked in as its own plugin (jake.notifications).
+link_notifications() {
+  local link="$HOME/.config/omarchy/plugins/jake.notifications"
+  [[ -L $link || ! -e $link ]] || return 0
+  ln -sfn "$DEST/notifications" "$link"
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  for _ in $(seq 40); do omarchy-plugin-list --json 2>/dev/null | jq -e 'any(.[]; .id == "jake.notifications")' >/dev/null && break; sleep 0.05; done
+  omarchy plugin enable jake.notifications >/dev/null 2>&1 || true
+}
+
+# 4. bar + dock + notifications
 say "Switching the bar to the sidebar"
 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
 omarchy bar use jake.sidebar
 omarchy plugin disable omarchy.dock >/dev/null 2>&1 || true
+link_notifications
 
 hyprctl reload >/dev/null
 errs=$(hyprctl configerrors 2>/dev/null | tr -d '[:space:]')

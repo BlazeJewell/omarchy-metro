@@ -53,6 +53,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
 | `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
 | `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
+| `notifications/` | a copy of Omarchy's notification service, changed so popups dock top-left against the sidebar and slide out from it (installed as the `jake.notifications` plugin) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | link to Omarchy's own menu model, so the built-in menu follows Omarchy updates |
 
@@ -65,6 +66,10 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 - Minimized windows use Omarchy's `special:minimized` workspace and
   `omarchy-minimized-from-N` tag, and Omarchy's floating workspace layout is
   respected (windows stay floating and keep their size).
+- Notifications keep all of Omarchy's features (stacks, actions, history, Do not
+  disturb); only their place and motion change. If an Omarchy update changes
+  notifications, re-clone with `omarchy plugin clone omarchy.notifications` and
+  re-apply the few `jake.sidebar:` lines.
 - Do not disturb, indicators, update available and keyboard layout come from
   Omarchy's own services and widgets.
 
