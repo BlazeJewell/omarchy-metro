@@ -91,9 +91,9 @@ hl.on("window.open", function(window)
       -- the same tag Omarchy's minimize uses, so its dock knows where a window came from
       hl.dispatch(hl.dsp.window.tag({ tag = "+omarchy-minimized-from-" .. ws.id, window = w }))
       hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = w }))
-      -- park fully past the screen's left edge (not just behind the sidebar, whose
-      -- left side would show it), at its own height and size
-      local px = math.floor(mx - aw - 40)
+      -- park with its right edge at the middle of the sidebar: hidden behind it, and
+      -- never out past its far (left) side; same height and size
+      local px = math.floor(mx + rl / 2 - aw)
       hl.dispatch(hl.dsp.window.move({ x = px, y = ay, window = w }))
       table.insert(parked, { w = w, x = px, y = ay })
     else
@@ -119,7 +119,11 @@ hl.on("window.open", function(window)
           hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = p.w }))
         end
       end, { timeout = 50, type = "oneshot" })
-    end, { timeout = 450, type = "oneshot" })
+    -- hidden as soon as its right edge is behind the sidebar (~200 ms into the
+    -- 379 ms ease-out move), not when the move ends: a window is far wider than
+    -- the sidebar, so while it creeps the last pixels its body shows in the gap
+    -- left of the sidebar
+    end, { timeout = 200, type = "oneshot" })
   end
   -- couldn't read a window's geometry here: let minimize.sh do it
   if #fallback > 0 then

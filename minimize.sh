@@ -60,9 +60,9 @@ while read -r a wsid ax ay aw ah fl; do
   fi
   # the same tag Omarchy's minimize uses, so its dock knows where a window came from
   [[ $wsid =~ ^[0-9]+$ ]] && batch+=("dispatch hl.dsp.window.tag({ tag = \"+omarchy-minimized-from-$wsid\", $w })")
-  # Park fully past the screen's left edge (not just behind the sidebar, which
-  # would show it passing), at its own height and size.
-  px=$(( mx - aw - 40 ))
+  # Park with its right edge at the middle of the sidebar: hidden behind it, and
+  # never out past its far (left) side. Same height and size.
+  px=$(( mx + rl / 2 - aw ))
   batch+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"unset\", $w })"
           "dispatch hl.dsp.window.move({ x = $px, y = $ay, $w })")
   # Moving onto the special workspace re-places it on screen, and with
@@ -81,7 +81,10 @@ done <<<"$info"
 
 [[ -n $then ]] && batch+=("$then")
 hbatch "${batch[@]}"
-IFS=';'
-setsid bash -c '. "$1"; sleep 0.45; hbatch "$2"; sleep 0.05; hbatch "$3"' _ \
+# Hidden as soon as its right edge is behind the sidebar (~200 ms into the
+# 379 ms ease-out move), not when the move ends: a window is far wider than the
+# sidebar, so while it creeps the last pixels its body shows in the gap left of it.
+IFS=";"
+setsid bash -c '. "$1"; sleep 0.2; hbatch "$2"; sleep 0.05; hbatch "$3"' _ \
   "$here/hbatch.sh" "${hide[*]}" "${unanim[*]}" >/dev/null 2>&1 < /dev/null &
 exit 0
