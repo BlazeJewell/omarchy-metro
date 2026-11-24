@@ -68,7 +68,9 @@ Item {
   // Plugin widgets the sidebar shows in its bottom row: everything in the bar's
   // tray section, plus any third-party widget placed anywhere in the bar layout
   // (Omarchy's own widgets are covered by the sidebar itself).
-  readonly property var pluginEntries: {
+  // Every plugin widget enabled in the bar layout (shell.json), wherever Omarchy
+  // was told to put it; the sidebar decides its place itself (pluginPlaces).
+  readonly property var allPluginEntries: {
     var layout = barConfig && barConfig.layout ? barConfig.layout : {}
     var out = [], seen = {}
     function add(e) {
@@ -86,6 +88,69 @@ Item {
     })
     return out
   }
+  // the ones that live in the Plugins row (the rest have their own section or sit in Status)
+  readonly property var pluginEntries: root.allPluginEntries.filter(function(e) {
+    var p = root.pluginPlaces[e.id]
+    if (p === "section" || p === "status") return false
+    // shown as a section of its own already (added from "+ add section")
+    return !root.extraSections.some(function(x) { return x.id === "w:" + e.id })
+  })
+
+  // ---- where each plugin goes ---------------------------------------------------
+  // Omarchy's installer asks for a spot in its own top bar, which the sidebar
+  // doesn't have; so when a plugin shows up, the sidebar asks instead (a card
+  // above the Plugins row): "row" (an icon in the Plugins row), "section" (its
+  // panel as a section of its own), "status" (in the Status row) or "later"
+  // (in the Plugins row for now; pick a place in Edit sidebar › Plugins).
+  // Kept per machine in ~/.config/omarchy/sidebar-plugin-places.json.
+  readonly property string placesPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-plugin-places.json"
+  property var pluginPlaces: ({})
+  property bool placesLoaded: false
+  property bool placesMissing: false     // first run: what's there already stays in the row, no questions
+  FileView {
+    path: root.placesPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object" && !Array.isArray(v)) root.pluginPlaces = v } catch (e) {} root.placesLoaded = true }
+    onLoadFailed: { root.placesMissing = true; root.placesLoaded = true; root.seedPlaces() }
+  }
+  function writePlaces(next) {
+    root.pluginPlaces = next
+    Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(next, null, 2), root.placesPath])
+  }
+  // first run: record the plugins already in the bar as living in the Plugins row
+  // (once the places file turned out missing and the bar layout is known)
+  function seedPlaces() {
+    if (!root.placesMissing || !(root.barConfig && root.barConfig.layout)) return
+    var next = {}
+    root.allPluginEntries.forEach(function(e) { next[e.id] = "row" })
+    root.placesMissing = false
+    root.writePlaces(next)
+  }
+  onBarConfigChanged: root.seedPlaces()
+  // plugins nobody has placed yet: the card asks about the first of them
+  readonly property var unplacedPlugins: root.placesLoaded && !root.placesMissing
+    ? root.allPluginEntries.map(function(e) { return e.id }).filter(function(id) { return root.pluginPlaces[id] === undefined }) : []
+  readonly property string placePromptId: root.unplacedPlugins.length ? root.unplacedPlugins[0] : ""
+  // a plugin with a panel of its own can be a section
+  function pluginCanSection(id) {
+    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+    return !!(w && w[id] && w[id].component) && root.noPanelWidgets.indexOf(id) === -1
+  }
+  function placePlugin(id, where) {
+    if (!id) return
+    var prev = root.pluginPlaces[id]
+    var next = Object.assign({}, root.pluginPlaces)
+    next[id] = where
+    root.writePlaces(next)
+    var sec = "w:" + id
+    var hasSection = root.extraSections.some(function(e) { return e.id === sec })
+    if (where === "section" && !hasSection) root.addWidgetSection(id)
+    else if (where !== "section" && prev === "section" && hasSection) root.removeWidgetSection(sec)
+  }
+  readonly property var placeChoices: [["row", "Plugins row", "as an icon at the bottom"], ["section", "Own section", "its panel, shown in the sidebar"],
+                                       ["status", "Status row", "next to the indicators"], ["later", "Choose later", "in the Plugins row for now; pick in Edit sidebar › Plugins"]]
   // Plugin widgets / tray icons hidden from the sidebar ("tray:<id>" for tray
   // icons), kept in ~/.config/omarchy/sidebar-hidden.json (not shell.json).
   readonly property string hiddenPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-hidden.json"
@@ -329,6 +394,7 @@ Item {
   // each one can be turned off in the Status settings
   readonly property var statusIdSetting: ({ "omarchy.indicators": "indicators", "omarchy.system-update": "update", "omarchy.keyboard-layout": "keyboard" })
   readonly property var statusIdsShown: root.statusIds.filter(function(id) { return root.setting("status", root.statusIdSetting[id]) !== false })
+    .concat(root.allPluginEntries.filter(function(e) { return root.pluginPlaces[e.id] === "status" }).map(function(e) { return e.id }))
   readonly property bool statusBatteryShown: root.batteryPresent && root.setting("status", "battery") !== false
   // The indicators Omarchy's widget offers ([{value, label}]), from its manifest,
   // so new ones show up in the settings by themselves.
@@ -356,7 +422,13 @@ Item {
   }
   // settings handed to a status widget on top of its own defaults
   function statusWidgetSettings(id) {
-    if (id !== "omarchy.indicators") return {}
+    if (id !== "omarchy.indicators") {
+      // a plugin placed here: its own settings from the bar layout, as in the Plugins row
+      var e = root.allPluginEntries.filter(function(x) { return x.id === id })[0]
+      var out = {}
+      if (e) for (var k in e) if (k !== "id") out[k] = e[k]
+      return out
+    }
     return { items: root.indicatorItems, alwaysShow: root.setting("status", "indicatorsAlways") === true }
   }
   property bool calendarOpen: false
@@ -1600,6 +1672,81 @@ Item {
   function isKeyboardPanel(o) {
     return !!o && o.loadedContent !== undefined && o.contentRequested !== undefined && o.anchorItem !== undefined && o.contentItem !== undefined
   }
+  // ---- widget parts: the blocks a widget section's panel is made of -------------
+  // Found by walking the panel's content (moved into the section); each can be
+  // switched off in the editor. Saved per section as "hiddenParts": paths of
+  // child indexes from the section's content ("0/3/1").
+  property var widgetParts: ({})        // section id -> [{ path, label, depth }]
+  function partKids(o, hiddenItems) {
+    var out = []
+    var kids = o && o.children ? o.children : []
+    for (var i = 0; i < kids.length; i++) {
+      var c = kids[i]
+      if (!c || c.width === undefined) continue
+      // what shows, plus what was switched off here (its own logic may hide it otherwise)
+      if (c.visible || hiddenItems.indexOf(c) !== -1) out.push({ index: i, item: c })
+    }
+    return out
+  }
+  // the first real text inside (not an icon glyph), as the part's name
+  function partLabel(o) {
+    var queue = [o], seen = 0
+    while (queue.length && seen++ < 200) {
+      var n = queue.shift()
+      var t = n && typeof n.text === "string" ? n.text.replace(/[\ue000-\uf8ff]/g, "").trim() : ""
+      if (t) return t.length > 32 ? t.slice(0, 31) + "…" : t
+      var kids = n && n.children ? n.children : []
+      for (var i = 0; i < kids.length; i++) if (kids[i] && kids[i].visible !== false) queue.push(kids[i])
+    }
+    if (o && o.height <= 3) return "divider"
+    return o && o.width <= 48 && o.height <= 48 ? "icon" : "unnamed part"
+  }
+  // [{ path, label, depth }]: skips wrappers with one child, lists the blocks of
+  // the first container with several, and one level inside blocks that are lists
+  function scanParts(top, hiddenItems) {
+    var node = top, path = [], out = []
+    for (var d = 0; d < 10; d++) {
+      var only = root.partKids(node, hiddenItems)
+      if (only.length !== 1) break
+      node = only[0].item; path.push(only[0].index)
+    }
+    root.partKids(node, hiddenItems).forEach(function(k) {
+      var p = path.concat([k.index])
+      var row = { path: p.join("/"), label: root.partLabel(k.item), depth: 0 }
+      out.push(row)
+      var inner = k.item, ip = p.slice()
+      for (var d2 = 0; d2 < 6; d2++) {
+        var one = root.partKids(inner, hiddenItems)
+        if (one.length !== 1) break
+        inner = one[0].item; ip.push(one[0].index)
+      }
+      var subs = root.partKids(inner, hiddenItems)
+      if (subs.length >= 2 && subs.length <= 12) {
+        var named = []
+        subs.forEach(function(s2) {
+          var l = root.partLabel(s2.item)
+          out.push({ path: ip.concat([s2.index]).join("/"), label: l, depth: 1 })
+          if (l !== "divider" && l !== "icon" && l !== "unnamed part") named.push(l)
+        })
+        // a block holding a list is named after what's in it
+        if (named.length >= 2) { var j = named.slice(0, 3).join(" · ") + (named.length > 3 ? " …" : ""); row.label = j.length > 40 ? j.slice(0, 39) + "…" : j }
+      }
+    })
+    return out
+  }
+  function partAt(top, path) {
+    var n = top
+    var ix = String(path).split("/")
+    for (var i = 0; i < ix.length && n; i++) n = n.children ? n.children[parseInt(ix[i])] : null
+    return n || null
+  }
+  function togglePart(secId, path) {
+    var cur = root.setting(secId, "hiddenParts")
+    var list = Array.isArray(cur) ? cur.slice() : []
+    var at = list.indexOf(path)
+    if (at === -1) list.push(path); else list.splice(at, 1)
+    root.setSetting(secId, "hiddenParts", list)
+  }
   function findPanels(o, out, depth, seen) {
     if (!o || depth > 14 || seen.indexOf(o) !== -1) return
     seen.push(o)
@@ -1838,8 +1985,15 @@ Item {
     root.saveSettings(next)
     root.editSection = id
     root.addOpen = false
+    // a plugin given a section of its own leaves the Plugins row
+    if (root.allPluginEntries.some(function(e) { return e.id === wid }) && root.pluginPlaces[wid] !== "section") {
+      var places = Object.assign({}, root.pluginPlaces); places[wid] = "section"; root.writePlaces(places)
+    }
   }
   function removeWidgetSection(id) {
+    // a plugin whose section goes away goes back to the Plugins row
+    var wid = root.widgetOf(id)
+    if (root.pluginPlaces[wid] === "section") { var places = Object.assign({}, root.pluginPlaces); places[wid] = "row"; root.writePlaces(places) }
     var next = JSON.parse(JSON.stringify(root.userSettings))
     next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id })
     if (Array.isArray(next.order)) next.order = next.order.filter(function(x) { return x !== id })
@@ -2883,7 +3037,47 @@ Item {
           required property var modelData
           readonly property string secId: modelData.id
           readonly property string wid: root.widgetOf(secId)
+          // bumped to look the widget up again (a plugin installed or updated after this section was made)
+          property int entryRev: 0
+          // briefly off to load the widget afresh (a part switched back on gets its own logic back)
+          property bool reloading: false
+          property var hiddenItems: []
+          property var appliedHidden: []
+          readonly property var hiddenParts: { var v = root.setting(xsec.secId, "hiddenParts"); return Array.isArray(v) ? v : [] }
+          function applyParts() {
+            if (!xsec.panel) return
+            // a part switched back on: load the widget again so its own visibility rules return
+            if (xsec.appliedHidden.some(function(p) { return xsec.hiddenParts.indexOf(p) === -1 })) { xsec.reload(); return }
+            var items = []
+            xsec.hiddenParts.forEach(function(p) { var it = root.partAt(xinner, p); if (it) { it.visible = false; items.push(it) } })
+            xsec.hiddenItems = items
+            xsec.appliedHidden = xsec.hiddenParts.slice()
+          }
+          function scanParts() {
+            if (!xsec.panel) return
+            var next = Object.assign({}, root.widgetParts)
+            next[xsec.secId] = root.scanParts(xinner, xsec.hiddenItems)
+            if (JSON.stringify(next[xsec.secId]) !== JSON.stringify(root.widgetParts[xsec.secId])) root.widgetParts = next
+          }
+          function reload() {
+            xsec.panel = null; xsec.hiddenItems = []; xsec.appliedHidden = []
+            xsec.reloading = true
+            Qt.callLater(function() { xsec.reloading = false })
+          }
+          onHiddenPartsChanged: applyParts()
+          // keep parts off (some are made later, e.g. on another tab) and the list fresh while editing it
+          Timer {
+            interval: 1500
+            repeat: true
+            running: !!xsec.panel && xsec.visible
+            onTriggered: { xsec.applyParts(); if (root.editing && root.editSection === xsec.secId) xsec.scanParts() }
+          }
+          Connections {
+            target: root
+            function onEditSectionChanged() { if (root.editSection === xsec.secId) xsec.scanParts() }
+          }
           readonly property var entry: {
+            var r = xsec.entryRev
             var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
             return w ? w[xsec.wid] || null : null
           }
@@ -2899,7 +3093,7 @@ Item {
 
           readonly property bool collapsed: root.setting(secId, "collapsed") === true
           Text {
-            visible: root.setting(xsec.secId, "title") !== false
+            visible: root.setting(xsec.secId, "title") === true   // off unless turned on in the editor
             Layout.fillWidth: true
             textFormat: Text.PlainText
             text: (xsec.collapsed ? "▸ " : "▾ ") + root.widgetName(xsec.wid).toUpperCase()
@@ -2920,6 +3114,9 @@ Item {
             visible: !xsec.collapsed
             Layout.fillWidth: true
             Layout.preferredHeight: xsec.maxH > 0 ? Math.min(xsec.fullH, xsec.maxH) : xsec.fullH
+            // when the sidebar runs out of room it shrinks (and scrolls) instead of
+            // pushing the sections above it off the screen
+            Layout.minimumHeight: Math.min(Layout.preferredHeight, 90)
             contentWidth: width
             contentHeight: xsec.fullH
             interactive: contentHeight > height + 1
@@ -2945,13 +3142,16 @@ Item {
             visible: false
             Layout.preferredWidth: 0
             Layout.preferredHeight: 0
-            active: !!xsec.entry && !!xsec.entry.component
+            active: !xsec.reloading && !!xsec.entry && !!xsec.entry.component
             sourceComponent: xsec.entry ? xsec.entry.component : null
             onLoaded: {
               if ("fixedEdge" in item) item.fixedEdge = "start"
               if ("bar" in item) item.bar = embedBar
               if ("moduleName" in item) item.moduleName = xsec.wid
               xsec.applySettings()
+              // a fresh load (also after the plugin was reloaded): look for its panel from scratch
+              xsec.noPanel = false
+              xsec.tries = 0
               embedTimer.restart()
             }
           }
@@ -2973,6 +3173,17 @@ Item {
           Connections {
             target: root
             function onUserSettingsChanged() { xsec.applySettings() }
+          }
+          // Watchdog: showing but with nothing in it (the plugin wasn't loaded yet, or
+          // was reloaded and its old panel went away): try again until it works.
+          Timer {
+            interval: 1500
+            repeat: true
+            running: xsec.visible && !xsec.collapsed && !xsec.panel && !xsec.noPanel
+            onTriggered: {
+              if (xhost.item) { xsec.tries = 0; embedTimer.restart() }
+              else xsec.entryRev++
+            }
           }
           // find the widget's panel, keep it open (its window hidden) and move its content here
           Timer {
@@ -3004,6 +3215,7 @@ Item {
                 k.parent = xinner
                 if (!k.anchors.fill) k.width = Qt.binding(function() { return xinner.width })
               }
+              Qt.callLater(function() { xsec.applyParts(); xsec.scanParts() })
             }
           }
           // if it closes itself, open it again; its window never shows
@@ -3602,7 +3814,7 @@ Item {
               spacing: 6
               EdHeading { text: root.widgetName(root.widgetOf(root.editSection)).toUpperCase() + " · WIDGET" }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
-              OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") !== false; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
+              OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") === true; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
               OptRow { label: "Max height"; options: [[0, "auto"], [200, "200"], [300, "300"], [450, "450"]]; current: root.setting(root.editSection, "maxH") || 0; onPicked: function(v) { root.setSetting(root.editSection, "maxH", v) } }
               OptRow { label: "Folded"; options: parent.parent.onOff; current: root.setting(root.editSection, "collapsed") === true; onPicked: function(v) { root.setSetting(root.editSection, "collapsed", v) } }
@@ -3648,6 +3860,38 @@ Item {
                     }
                   }
                 }
+              }
+              // the blocks its panel is made of, found by scanning it
+              EdHeading {
+                id: partsHeading
+                readonly property var parts: root.widgetParts[root.editSection] || []
+                readonly property var hidden: { var v = root.setting(root.editSection, "hiddenParts"); return Array.isArray(v) ? v : [] }
+                visible: parts.length > 0
+                text: "PARTS"
+              }
+              Repeater {
+                model: partsHeading.parts
+                OptRow {
+                  required property var modelData
+                  Layout.leftMargin: modelData.depth * 12
+                  label: (modelData.depth > 0 ? "› " : "") + modelData.label
+                  options: [[true, "on"], [false, "off"]]
+                  current: partsHeading.hidden.indexOf(modelData.path) === -1
+                  onPicked: function(v) { if (v !== (partsHeading.hidden.indexOf(modelData.path) === -1)) root.togglePart(root.editSection, modelData.path) }
+                }
+              }
+              Text {
+                visible: partsHeading.parts.length > 0
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "Found by scanning the widget's panel. A part that's only on another tab shows up once that tab is open."
+                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+              }
+              Text {
+                visible: partsHeading.hidden.length > 0
+                textFormat: Text.PlainText; text: "Show all parts again"
+                color: showAllMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: showAllMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting(root.editSection, "hiddenParts", []) }
               }
               Text {
                 Layout.topMargin: 4
@@ -3696,6 +3940,18 @@ Item {
               spacing: 6
               EdHeading { text: "PLUGINS" }
               OptRow { label: "Plugins"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
+              // where each plugin lives
+              EdHeading { visible: root.allPluginEntries.length > 0; text: "WHERE EACH PLUGIN GOES" }
+              Repeater {
+                model: root.allPluginEntries
+                OptRow {
+                  required property var modelData
+                  label: root.widgetName(modelData.id) + (root.pluginPlaces[modelData.id] === "later" ? "  ·  not placed" : "")
+                  options: [["row", "row"]].concat(root.pluginCanSection(modelData.id) ? [["section", "section"]] : []).concat([["status", "status"]])
+                  current: root.pluginPlaces[modelData.id] === "later" || root.pluginPlaces[modelData.id] === undefined ? "" : root.pluginPlaces[modelData.id]
+                  onPicked: function(v) { root.placePlugin(modelData.id, v) }
+                }
+              }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. Hide single plugins there, under Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
@@ -5142,6 +5398,8 @@ Item {
                   function inject() {
                     if (!item) return
                     if ("fixedEdge" in item) item.fixedEdge = "end"
+                    // (a delayed call can land after this cell went away, e.g. the plugin moved to a section)
+                    if (typeof widgetBar === "undefined" || !widgetBar) return
                     if ("bar" in item) item.bar = widgetBar
                     if ("moduleName" in item) item.moduleName = phost.moduleName
                     if ("settings" in item) {
@@ -5163,6 +5421,57 @@ Item {
                 }
               }
 
+            }
+          }
+        }
+      }
+
+      // -- a new plugin: where should it go? (above the bottom row) --------------
+      Rectangle {
+        id: placeCard
+        readonly property string pid: root.placePromptId
+        visible: pid !== "" && !root.editing && !win.qsHere
+                 && (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name === win.monitorName : true)
+        z: 21
+        readonly property real bottomY: mainCol.y + (secBottom.visible ? bottomSep.y - mainCol.spacing : mainCol.height)
+        x: mainCol.x
+        width: mainCol.width
+        height: placeCol.implicitHeight + 24
+        y: bottomY - height - 8
+        radius: 8
+        color: win.color.a < 1 ? root.background : win.color
+        border.width: 1
+        border.color: root.faint
+        ColumnLayout {
+          id: placeCol
+          anchors.fill: parent
+          anchors.margins: 12
+          spacing: 6
+          Text { textFormat: Text.PlainText; text: "NEW PLUGIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText; elide: Text.ElideRight
+            text: placeCard.pid ? root.widgetName(placeCard.pid) : ""
+            color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
+          }
+          Text { textFormat: Text.PlainText; text: "Where should it go?"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+          Repeater {
+            model: root.placeChoices.filter(function(c) { return c[0] !== "section" || root.pluginCanSection(placeCard.pid) })
+            Rectangle {
+              required property var modelData
+              Layout.fillWidth: true
+              Layout.preferredHeight: choiceCol.implicitHeight + 10
+              radius: 5
+              color: choiceMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) : "transparent"
+              ColumnLayout {
+                id: choiceCol
+                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: 8; anchors.rightMargin: 8
+                spacing: 1
+                Text { textFormat: Text.PlainText; text: modelData[1]; color: modelData[0] === "later" ? root.dim : root.foreground; font.family: root.fontFamily; font.pixelSize: 12 }
+                Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: modelData[2]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+              }
+              MouseArea { id: choiceMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.placePlugin(placeCard.pid, parent.modelData[0]) }
             }
           }
         }
