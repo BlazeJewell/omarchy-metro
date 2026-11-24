@@ -964,6 +964,8 @@ Item {
   property var ovGeometry: ({})
   function toggleOverview() {
     if (root.overviewOpen) { root.closeOverview(); return }
+    // not while editing: it would cover the editor (and closing that drops unsaved changes)
+    if (root.editing) return
     // the overview replaces whatever the sidebar had open
     if (root.searching) root.exitSearch("overview")
     root.qsOpen = false
@@ -1305,6 +1307,7 @@ Item {
   function toggleQuickSettings(monitorName) {
     root.closeDockedPanel()
     if (root.qsOpen) { root.qsOpen = false; return }
+    root.closeOverview()     // it would cover what opens next
     root.exitSearch()
     root.closeTrayMenu()
     root.qsMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
@@ -1432,6 +1435,7 @@ Item {
   // Open settings at a section (keybinds); the same section again closes it.
   function openSettings(section) {
     if (root.qsOpen && root.qsPage === "" && (!section || root.qsSection === section)) { root.qsOpen = false; return }
+    root.closeOverview()
     root.exitSearch()
     root.closeTrayMenu()
     root.qsMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
@@ -1953,6 +1957,7 @@ Item {
     { id: "apps", label: "APP LIST" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
+    root.closeOverview()     // it covers the window area, where the editor opens
     root.closeQuickSettings()
     root.exitSearch()
     root.closeTrayMenu()
