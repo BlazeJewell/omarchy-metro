@@ -97,60 +97,22 @@ Item {
   })
 
   // ---- where each plugin goes ---------------------------------------------------
-  // Omarchy's installer asks for a spot in its own top bar, which the sidebar
-  // doesn't have; so when a plugin shows up, the sidebar asks instead (a card
-  // above the Plugins row): "row" (an icon in the Plugins row), "section" (its
-  // panel as a section of its own), "status" (in the Status row) or "later"
-  // (in the Plugins row for now; pick a place in Edit sidebar › Plugins).
-  // Kept per machine in ~/.config/omarchy/sidebar-plugin-places.json.
+  // New plugins go in the Plugins row. A plugin given a section of its own
+  // ("+ add section") is noted as "section" so it leaves the row ("status":
+  // in the Status row). Kept per machine in ~/.config/omarchy/sidebar-plugin-places.json.
   readonly property string placesPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-plugin-places.json"
   property var pluginPlaces: ({})
-  property bool placesLoaded: false
-  property bool placesMissing: false     // first run: what's there already stays in the row, no questions
   FileView {
     path: root.placesPath
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object" && !Array.isArray(v)) root.pluginPlaces = v } catch (e) {} root.placesLoaded = true }
-    onLoadFailed: { root.placesMissing = true; root.placesLoaded = true; root.seedPlaces() }
+    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object" && !Array.isArray(v)) root.pluginPlaces = v } catch (e) {} }
   }
   function writePlaces(next) {
     root.pluginPlaces = next
     Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(next, null, 2), root.placesPath])
   }
-  // first run: record the plugins already in the bar as living in the Plugins row
-  // (once the places file turned out missing and the bar layout is known)
-  function seedPlaces() {
-    if (!root.placesMissing || !(root.barConfig && root.barConfig.layout)) return
-    var next = {}
-    root.allPluginEntries.forEach(function(e) { next[e.id] = "row" })
-    root.placesMissing = false
-    root.writePlaces(next)
-  }
-  onBarConfigChanged: root.seedPlaces()
-  // plugins nobody has placed yet: the card asks about the first of them
-  readonly property var unplacedPlugins: root.placesLoaded && !root.placesMissing
-    ? root.allPluginEntries.map(function(e) { return e.id }).filter(function(id) { return root.pluginPlaces[id] === undefined }) : []
-  readonly property string placePromptId: root.unplacedPlugins.length ? root.unplacedPlugins[0] : ""
-  // a plugin with a panel of its own can be a section
-  function pluginCanSection(id) {
-    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
-    return !!(w && w[id] && w[id].component) && root.noPanelWidgets.indexOf(id) === -1
-  }
-  function placePlugin(id, where) {
-    if (!id) return
-    var prev = root.pluginPlaces[id]
-    var next = Object.assign({}, root.pluginPlaces)
-    next[id] = where
-    root.writePlaces(next)
-    var sec = "w:" + id
-    var hasSection = root.extraSections.some(function(e) { return e.id === sec })
-    if (where === "section" && !hasSection) root.addWidgetSection(id)
-    else if (where !== "section" && prev === "section" && hasSection) root.removeWidgetSection(sec)
-  }
-  readonly property var placeChoices: [["row", "Plugins row", "as an icon at the bottom"], ["section", "Own section", "its panel, shown in the sidebar"],
-                                       ["status", "Status row", "next to the indicators"], ["later", "Choose later", "in the Plugins row for now; pick in Edit sidebar › Plugins"]]
   // Plugin widgets / tray icons hidden from the sidebar ("tray:<id>" for tray
   // icons), kept in ~/.config/omarchy/sidebar-hidden.json (not shell.json).
   readonly property string hiddenPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-hidden.json"
@@ -5729,57 +5691,6 @@ Item {
                 }
               }
 
-            }
-          }
-        }
-      }
-
-      // -- a new plugin: where should it go? (above the bottom row) --------------
-      Rectangle {
-        id: placeCard
-        readonly property string pid: root.placePromptId
-        visible: pid !== "" && !root.editing && !win.qsHere
-                 && (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name === win.monitorName : true)
-        z: 21
-        readonly property real bottomY: win.bottomEdgeY
-        x: sideFlick.x
-        width: sideFlick.width
-        height: placeCol.implicitHeight + 24
-        y: bottomY - height - 8
-        radius: 8
-        color: win.color.a < 1 ? root.background : win.color
-        border.width: 1
-        border.color: root.faint
-        ColumnLayout {
-          id: placeCol
-          anchors.fill: parent
-          anchors.margins: 12
-          spacing: 6
-          Text { textFormat: Text.PlainText; text: "NEW PLUGIN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText; elide: Text.ElideRight
-            text: placeCard.pid ? root.widgetName(placeCard.pid) : ""
-            color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
-          }
-          Text { textFormat: Text.PlainText; text: "Where should it go?"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
-          Repeater {
-            model: root.placeChoices.filter(function(c) { return c[0] !== "section" || root.pluginCanSection(placeCard.pid) })
-            Rectangle {
-              required property var modelData
-              Layout.fillWidth: true
-              Layout.preferredHeight: choiceCol.implicitHeight + 10
-              radius: 5
-              color: choiceMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) : "transparent"
-              ColumnLayout {
-                id: choiceCol
-                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: 8; anchors.rightMargin: 8
-                spacing: 1
-                Text { textFormat: Text.PlainText; text: modelData[1]; color: modelData[0] === "later" ? root.dim : root.foreground; font.family: root.fontFamily; font.pixelSize: 12 }
-                Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: modelData[2]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
-              }
-              MouseArea { id: choiceMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.placePlugin(placeCard.pid, parent.modelData[0]) }
             }
           }
         }
