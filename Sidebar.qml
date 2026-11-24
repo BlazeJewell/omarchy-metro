@@ -1513,7 +1513,7 @@ Item {
     function onRawEvent(event) {
       var n = String(event.name)
       if (n.indexOf("monitoradded") === 0 || n.indexOf("monitorremoved") === 0 || n === "configreloaded") displayRepoll.restart()
-      if (n === "configreloaded") { themeProc.running = true; animProc.running = true }
+      if (n === "configreloaded") { themeProc.running = true; animProc.running = true; wallProc.running = true }
     }
   }
   readonly property string refreshScript: Qt.resolvedUrl("refresh.sh").toString().replace("file://", "")
@@ -1928,6 +1928,24 @@ Item {
   property var themeBorder: ["#33ccff", "#00ff99"]
   property real themeBorderAngle: 45
   property int hyprGap: 10
+  // the wallpaper file, for the gap left of the panel (gapCover); not a video
+  property string wallPath: ""
+  Process {
+    id: wallProc
+    command: ["bash", "-c", "readlink -f \"$HOME/.local/state/omarchy/current/background\""]
+    running: true
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var p = String(text).trim()
+        if (/\.(mp4|webm|mkv|mov|avi|gif)$/i.test(p)) p = ""
+        if (p !== root.wallPath) root.wallPath = p
+      }
+    }
+  }
+  // a new theme or background repoints the link; the theme's colours change with
+  // a theme, and the timer catches a background picked on its own
+  onBackgroundChanged: wallProc.running = true
+  Timer { interval: 15000; running: true; repeat: true; onTriggered: wallProc.running = true }
   Process {
     id: themeProc
     command: ["bash", "-c", "hyprctl getoption general:col.active_border | head -1; hyprctl getoption general:gaps_out | head -1"]
@@ -2420,6 +2438,33 @@ Item {
       readonly property int panelBorderW: root.panelStyled ? root.lookBorder : 0
       readonly property real panelInnerX: panelInset + panelBorderW
       readonly property real panelInnerW: width - panelInset - 2 * panelBorderW
+      // The gap left of the panel shows the wallpaper. A window sliding out to the
+      // left is far wider than the panel, so its body would show through that gap
+      // on the way out; the wallpaper is drawn there too (laid out like Omarchy's
+      // background: the whole screen, cropped to cover), so the gap looks the same
+      // but windows pass behind it.
+      Item {
+        id: gapCover
+        visible: root.panelStyled && win.panelInset > 0 && root.wallPath !== "" && !win.edgeHidden
+        z: -11
+        x: 0; y: 0
+        width: win.panelInset
+        height: win.height
+        clip: true
+        Image {
+          x: -win.margins.left
+          y: 0
+          width: win.screen ? win.screen.width : 0
+          height: win.screen ? win.screen.height : 0
+          source: root.wallPath === "" ? "" : "file://" + root.wallPath
+          fillMode: Image.PreserveAspectCrop
+          sourceSize.width: width
+          sourceSize.height: height
+          asynchronous: true
+          cache: false
+          smooth: true
+        }
+      }
       Rectangle {
         id: panelFrame
         visible: root.panelStyled
