@@ -72,9 +72,9 @@ services, so updates keep working.
 | --- | --- |
 | **Super+Space: the menu, in the panel** ![Menu demo](docs/demo-menu.gif) | **Quick settings slide over the panel** ![Quick settings demo](docs/demo-quick-settings.gif) |
 
-**One app at a time: each new app slides in from the left and the last one slides out**
+**One app at a time: each new app slides in from the left and the last one slides out; minimizing slides an app off the screen**
 
-![One app at a time demo](docs/demo-one-app.gif)
+![One app at a time and minimize demo](docs/demo-one-app.gif)
 
 **Notifications appear inside the panel, at the top**
 
