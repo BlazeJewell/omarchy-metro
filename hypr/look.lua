@@ -20,3 +20,10 @@ hl.config({
   general = { border_size = 0 },
   decoration = { rounding = 10 },
 })
+
+-- Opening or switching to another app while one is fullscreen takes it out of
+-- fullscreen instead of handing fullscreen to the new app (Omarchy's default),
+-- so apps opened from the sidebar always come up at normal size.
+hl.config({
+  misc = { on_focus_under_fullscreen = 2 },
+})
