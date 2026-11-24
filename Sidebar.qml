@@ -2013,17 +2013,33 @@ Item {
       implicitWidth: root.sidebarWidth
       exclusionMode: win.autoHide ? ExclusionMode.Ignore : ExclusionMode.Normal
       exclusiveZone: win.autoHide ? 0 : root.sidebarWidth
-      // Over a fullscreen window the sidebar comes and goes with the overview,
-      // sliding in from the left as it zooms out and back as it closes.
-      readonly property real fsSlide: win.fsHere && win.overviewHere && !(root.searching && root.searchMonitor === win.monitorName)
-                                      && !win.qsHere && !win.trayHere && !win.editHere ? 1 - root.ovProgress : 0
+      // Over a fullscreen window the sidebar slides in with the overview as it opens.
+      // On close it waits: the previews zoom back first, and only once the overview is
+      // gone does the sidebar slide out (fsOut), so nothing moves at the same time.
+      readonly property bool fsAlone: win.fsHere && !(root.searching && root.searchMonitor === win.monitorName)
+                                      && !win.qsHere && !win.trayHere && !win.editHere
+      property real fsOut: 0
+      property bool fsLeaving: false
+      NumberAnimation {
+        id: fsOutAnim
+        target: win; property: "fsOut"; from: 0; to: 1
+        duration: Style.duration(220); easing.type: Easing.InCubic
+        onFinished: { win.fsLeaving = false; win.fsOut = 0 }
+      }
+      onOverviewHereChanged: {
+        if (!win.overviewHere && win.fsAlone) { win.fsLeaving = true; fsOutAnim.restart() }
+        else if (win.overviewHere && fsOutAnim.running) { fsOutAnim.stop(); win.fsLeaving = false; win.fsOut = 0 }
+      }
+      readonly property real fsSlide: !win.fsAlone ? 0
+                                      : win.fsLeaving ? win.fsOut
+                                      : win.overviewHere && root.overviewOpen ? 1 - root.ovProgress : 0
       margins.left: win.tucked ? -(root.sidebarWidth - 4) : -Math.round(root.sidebarWidth * win.fsSlide)
       color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
 
       // -- auto-hide: tucked away off the left edge until the pointer touches it --
       readonly property bool autoHide: root.setting("general", "autohide") === true || root.barHidden
       readonly property bool keepOpen: (root.searching && root.searchMonitor === win.monitorName) || win.qsHere || win.trayHere
-        || root.dockedPanel !== null || win.editHere || win.menuItem !== null || win.dragItem !== null || win.overviewHere
+        || root.dockedPanel !== null || win.editHere || win.menuItem !== null || win.dragItem !== null || win.overviewHere || win.fsLeaving
       property bool revealed: false
       readonly property bool tucked: autoHide && !revealed && !keepOpen
       HoverHandler {
@@ -2311,10 +2327,7 @@ Item {
         visible: win.overviewHere
         color: "transparent"
         anchors { top: true; bottom: true; left: true; right: true }
-        // Starts where the sidebar ends. Over a fullscreen app the sidebar slides in and
-        // out with the overview, so this edge follows it; otherwise the previews would
-        // stay cut off at the sidebar's old edge while it slides away.
-        readonly property int inset: root.sidebarWidth - Math.round(root.sidebarWidth * win.fsSlide)
+        readonly property int inset: root.sidebarWidth   // the sidebar is left alone
         margins.left: inset
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
