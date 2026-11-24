@@ -10,9 +10,7 @@ omarchy plugin enable omarchy.dock >/dev/null 2>&1 || true
 omarchy plugin disable jake.notifications >/dev/null 2>&1 || true
 omarchy plugin enable omarchy.notifications >/dev/null 2>&1 || true
 rm -f "$HOME/.config/omarchy/plugins/jake.notifications"
-sed -i '/require("hypr.jake_sidebar")/d' "$HYPR/hyprland.lua"
-rm -f "$HYPR/jake_sidebar.lua"
-hyprctl reload >/dev/null
+bash "$DEST/hypr-link.sh" --remove
 if [[ ${1:-} == --purge ]]; then
   rm -f "$HOME"/.config/omarchy/sidebar-*.json
   rm -rf "$DEST"

@@ -135,14 +135,22 @@ gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar
 The installer:
 
 - puts the plugin in `~/.config/omarchy/plugins/jake.sidebar`
-- links `hypr/` in and adds one line to `~/.config/hypr/hyprland.lua`:
-  `require("hypr.jake_sidebar")`
+- loads `hypr/` (Super+Space and other bindings, one app at a time, animations)
+  with one line in `~/.config/hypr/hyprland.lua` (`hypr-link.sh`)
 - copies the saved layout from `layout/` into `~/.config/omarchy`
   (pass `--keep-layout` to keep the machine's own), backing up what it replaces
 - switches the bar to the sidebar (`omarchy bar use jake.sidebar`) and turns off
   Omarchy's dock
 
 Undo with `./uninstall.sh` (add `--purge` to delete the plugin and layout too).
+
+Installing with `omarchy plugin add https://github.com/BlazeJewell/omarchy-sidebar`
+works too: the sidebar hooks up its Hyprland side itself the first time it starts
+(`hypr-link.sh`, which reloads Hyprland once). That line skips itself if the plugin
+folder is removed, and `hypr/` only loads while the sidebar is the bar in use, so
+disabling it gives Super+Space and the rest back to Omarchy. It doesn't copy the
+saved layout, turn off Omarchy's dock, or dock notifications top-left; run
+`install.sh` for those.
 
 ## Keeping machines in sync
 
@@ -164,7 +172,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | Path | What |
 | --- | --- |
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
-| `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
+| `hypr/` | Hyprland side (loaded by `hypr-link.sh`): `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
 | `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
 | `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
 | `layout/` | the saved sidebar layout synced between machines |

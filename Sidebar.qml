@@ -25,6 +25,11 @@ import "MenuModel.js" as MenuModel
 Item {
   id: root
 
+  // Hook up the Hyprland side (Super+Space, one app at a time, animations) if
+  // it isn't yet: `omarchy plugin add` only installs this panel. Does nothing
+  // once it's there.
+  Component.onCompleted: Quickshell.execDetached(["bash", Qt.resolvedUrl("hypr-link.sh").toString().replace("file://", "")])
+
   // ---- injected by the omarchy-shell host -------------------------------
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property var shell: null

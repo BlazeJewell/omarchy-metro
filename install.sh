@@ -7,8 +7,9 @@
 #
 # What it does:
 #   1. puts the plugin at ~/.config/omarchy/plugins/jake.sidebar (clone, or pull if it's there)
-#   2. links the Hyprland side (keybindings, animations, window rules) and loads it
-#      from ~/.config/hypr/hyprland.lua with one line
+#   2. loads the Hyprland side (keybindings, animations, window rules) from
+#      ~/.config/hypr/hyprland.lua with one line (hypr-link.sh; the sidebar also
+#      does this itself when it starts, so `omarchy plugin add` gets it too)
 #   3. copies the saved sidebar layout (sections, pins, hidden icons, profiles) from
 #      layout/ into ~/.config/omarchy, backing up anything it replaces
 #      (skip with --keep-layout)
@@ -46,16 +47,8 @@ else
 fi
 
 # 2. the Hyprland side
-say "Linking the Hyprland config"
-ln -sf "$DEST/hypr/init.lua" "$HYPR/jake_sidebar.lua"
-if ! grep -q 'require("hypr.jake_sidebar")' "$HYPR/hyprland.lua"; then
-  cp "$HYPR/hyprland.lua" "$HYPR/hyprland.lua.bak.$(date +%s)"
-  if grep -q '^require("hypr.autostart")' "$HYPR/hyprland.lua"; then
-    sed -i '/^require("hypr.autostart")/a require("hypr.jake_sidebar") -- the sidebar rice (jake.sidebar plugin)' "$HYPR/hyprland.lua"
-  else
-    printf '\nrequire("hypr.jake_sidebar") -- the sidebar rice (jake.sidebar plugin)\n' >> "$HYPR/hyprland.lua"
-  fi
-fi
+say "Loading the Hyprland config"
+bash "$DEST/hypr-link.sh"
 
 # 3. the saved layout
 if ! $KEEP_LAYOUT; then
