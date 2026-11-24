@@ -613,6 +613,8 @@ Item {
   // (Hyprland warps it on focus and workspace changes).
   function dispatchKeepCursor(steps, tail, head) {
     var parts = ["pos=$(hyprctl cursorpos); x=${pos%%,*}; y=${pos##*, }"]
+    // remember a fullscreen window being switched away from (fsmem.sh)
+    parts.push("bash " + Util.shellQuote(root.fsmemScript) + " save")
     if (head) parts.push(head)
     steps.forEach(function(s) { parts.push("hyprctl dispatch " + Util.shellQuote(s) + " >/dev/null") })
     if (tail) parts.push(tail)
@@ -627,6 +629,8 @@ Item {
   // and more windows from the same app (Steam + its chat) tile together.
   readonly property string soloScript: Qt.resolvedUrl("solo.sh").toString().replace("file://", "")
   readonly property string minimizeScript: Qt.resolvedUrl("minimize.sh").toString().replace("file://", "")
+  readonly property string fsmemScript: Qt.resolvedUrl("fsmem.sh").toString().replace("file://", "")
+  function fsRestore(list) { return "bash " + Util.shellQuote(root.fsmemScript) + " restore" + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
   // The next new window tiles instead of opening alone (Shift+click, drag-and-drop):
   // a short-lived note read by ~/.config/hypr/sidebar_solo.lua.
   readonly property string tileNextFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-tile-next"
@@ -752,7 +756,7 @@ Item {
     }
     steps.push("hl.dsp.focus({ " + root.windowTarget(t) + " })")
     steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
-    root.dispatchKeepCursor(steps, "", tile ? "" : root.clearCommand([t]))
+    root.dispatchKeepCursor(steps, root.fsRestore([t]), tile ? "" : root.clearCommand([t]))
   }
   function closeWindow(t) {
     if (t) root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.window.close({ " + root.windowTarget(t) + " })"))
@@ -797,6 +801,7 @@ Item {
       var last = hidden[hidden.length - 1]
       steps.push("hl.dsp.focus({ " + root.windowTarget(last) + " })")
     }
+    if (!park) park = root.fsRestore(visible.length > 0 ? [visible[0]] : hidden)
     root.dispatchKeepCursor(steps, park, head)
   }
 

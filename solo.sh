@@ -10,6 +10,7 @@ set -u
 ws=$2; shift 2; keep=" $* "
 here=$(dirname "$0")
 parked=()
+bash "$here/fsmem.sh" save   # a fullscreen window comes back fullscreen later
 for other in $(hyprctl clients -j | jq -r --argjson ws "$ws" '.[] | select(.workspace.id == $ws and (.floating | not)) | .address'); do
   [[ $keep == *" $other "* ]] && continue
   hyprctl dispatch "hl.dsp.window.float({ action = \"on\", window = \"address:$other\" })" >/dev/null

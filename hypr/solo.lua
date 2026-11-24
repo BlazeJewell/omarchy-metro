@@ -24,6 +24,19 @@ local function take_tile_next()
   return os.time() <= until_s
 end
 
+-- Which windows are fullscreen (and how), and the last one to leave it.
+local fullscreen_mode = {}
+local last_unfullscreen = nil
+hl.on("window.fullscreen", function(window)
+  if not window then return end
+  if (window.fullscreen or 0) > 0 then
+    fullscreen_mode[window.address] = window.fullscreen
+  elseif fullscreen_mode[window.address] then
+    last_unfullscreen = { address = window.address, mode = fullscreen_mode[window.address], at = os.time() }
+    fullscreen_mode[window.address] = nil
+  end
+end)
+
 hl.on("window.open", function(window)
   if not window or window.floating then return end
   local ws = window.workspace
@@ -41,6 +54,18 @@ hl.on("window.open", function(window)
 
   -- Lift them out of the layout right away so the new window is placed full
   -- size, then slide them off to the left and hide them (minimize.sh).
+  -- A fullscreen one comes back fullscreen when restored from the sidebar
+  -- (fsmem.sh). Hyprland has already taken it out of fullscreen by now, just
+  -- before this window opened, so go by that.
+  if last_unfullscreen and os.time() - last_unfullscreen.at <= 1 then
+    for _, other in ipairs(others) do
+      if other.address == last_unfullscreen.address then
+        local mem = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-sidebar-fullscreen", "a")
+        if mem then mem:write(other.address .. " " .. last_unfullscreen.mode .. "\n"); mem:close() end
+      end
+    end
+  end
+
   local addresses = {}
   for _, other in ipairs(others) do
     hl.dispatch(hl.dsp.window.float({ action = "on", window = "address:" .. other.address }))
