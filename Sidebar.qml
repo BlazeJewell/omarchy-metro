@@ -1607,7 +1607,7 @@ Item {
     media: { show: false, idle: true },
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true },
-    apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false },
+    apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
     bottom: { plugins: true, tray: true },
     general: { background: "solid", autohide: false }
   })
@@ -1649,7 +1649,8 @@ Item {
   // A section hidden in the settings still shows (faded) while editing, so it can be turned back on.
   function sectionShown(section) { return root.setting(section, "show") !== false }
   function sectionOpacity(section) { return root.setting(section, "show") === false ? 0.35 : 1 }
-  readonly property int rowH: root.setting("apps", "compact") ? 30 : 36
+  // a little taller when apps show a hint line under their name
+  readonly property int rowH: (root.setting("apps", "compact") ? 30 : 36) + (root.setting("apps", "hints") !== false ? 4 : 0)
   // Order of the sections down the sidebar (dragged in edit mode).
   readonly property var defaultOrder: ["clock", "system", "workspaces", "search", "media", "notifications", "apps", "bottom"]
   readonly property var sectionOrder: {
@@ -1876,6 +1877,35 @@ Item {
 
   // ---- app list extras -------------------------------------------------------------
   // Unread count an app shows in its window title, like "(6) Discord".
+  // A hint of what an app is showing, from its window title: the page in a
+  // browser, the folder in a terminal, the file in an editor. The unread count
+  // ("(6) ") and the app's own name ("... — Mozilla Firefox") are left off, and
+  // nothing is shown when what's left is just the app's name.
+  function hintOf(item) {
+    var wins = item && item.windows ? item.windows : []
+    if (!wins.length) return ""
+    var t = null
+    for (var i = 0; i < wins.length && !t; i++) if (wins[i].activated) t = wins[i]
+    for (var j = 0; j < wins.length && !t; j++) if (!root.isMinimized(wins[j])) t = wins[j]
+    var title = String((t || wins[0]).title || "").replace(/^\s*\(\d+\)\s*/, "").trim()
+    // Status symbols some apps put in front of their title (a spinner while an
+    // agent works, a dot for unsaved changes, an emoji): left off when the
+    // "Status symbols in hints" setting is off.
+    if (root.setting("apps", "hintSymbols") === false)
+      title = title.replace(/^(?:[\u00B7\u2022*\u2190-\u21FF\u2300-\u23FF\u2500-\u27BF\u2800-\u28FF\u2B00-\u2BFF\uFE0F]|[\uD83C-\uD83E][\uDC00-\uDFFF])+\s*/, "").trim()
+    var name = root.displayName(item).toLowerCase()
+    var key = String(item.key || "").split(".").pop().toLowerCase()
+    // the last " - ", " – ", " — " or " | " part, if it names the app
+    var m = /^(.*\S)\s+[-\u2013\u2014|]\s+(.+)$/.exec(title)
+    if (m) {
+      var last = m[2].toLowerCase()
+      if (last.indexOf(name) >= 0 || (last.length >= 3 && name.indexOf(last) >= 0) || (key && last.indexOf(key) >= 0)) title = m[1]
+    }
+    var low = title.toLowerCase()
+    // just the app's name ("Mozilla Firefox" on a new tab): nothing to hint at
+    if (!title || low === name || low === key || (key && low.slice(-key.length - 1) === " " + key)) return ""
+    return title
+  }
   function badgeOf(item) {
     var wins = item && item.windows ? item.windows : []
     var n = 0
@@ -3407,6 +3437,8 @@ Item {
               OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
               OptRow { label: "Open indicator"; options: [["bar", "bar + dot"], ["dot", "dot"], ["none", "none"]]; current: root.setting("apps", "indicator"); onPicked: function(v) { root.setSetting("apps", "indicator", v) } }
               OptRow { label: "App icons"; options: parent.parent.onOff; current: root.setting("apps", "icons"); onPicked: function(v) { root.setSetting("apps", "icons", v) } }
+              OptRow { label: "Window title hint"; options: parent.parent.onOff; current: root.setting("apps", "hints"); onPicked: function(v) { root.setSetting("apps", "hints", v) } }
+              OptRow { label: "Status symbols in hints"; options: [[true, "show"], [false, "hide"]]; current: root.setting("apps", "hintSymbols"); onPicked: function(v) { root.setSetting("apps", "hintSymbols", v) } }
               OptRow { label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
               OptRow { label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
               Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
@@ -4285,6 +4317,39 @@ Item {
                     color: row.running ? root.foreground : root.dim
                     font.family: root.fontFamily; font.pixelSize: 12; font.bold: row.focused
                     elide: Text.ElideRight
+                  }
+                  // what the app is showing (window title), as a hint
+                  // Too long to fit: cut off with "…", and while the row is
+                  // hovered it slides along to the end and back so it can be read.
+                  Item {
+                    id: hintBox
+                    readonly property string hint: root.setting("apps", "hints") !== false && row.running ? root.hintOf(row.modelData) : ""
+                    readonly property real overflow: Math.max(0, hintText.implicitWidth - width)
+                    readonly property bool sliding: rowMouse.containsMouse && overflow > 0
+                    visible: hint !== ""
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: hintText.implicitHeight
+                    clip: true
+                    Text {
+                      id: hintText
+                      width: hintBox.sliding ? implicitWidth : hintBox.width
+                      textFormat: Text.PlainText
+                      text: hintBox.hint
+                      color: root.dim
+                      font.family: root.fontFamily; font.pixelSize: 10
+                      elide: hintBox.sliding ? Text.ElideNone : Text.ElideRight
+                      maximumLineCount: 1
+                    }
+                    // a steady reading pace (~40 px/s), pausing at each end
+                    SequentialAnimation {
+                      running: hintBox.sliding
+                      loops: Animation.Infinite
+                      onRunningChanged: if (!running) hintText.x = 0
+                      PauseAnimation { duration: 700 }
+                      NumberAnimation { target: hintText; property: "x"; from: 0; to: -hintBox.overflow; duration: hintBox.overflow * 25; easing.type: Easing.InOutSine }
+                      PauseAnimation { duration: 1200 }
+                      NumberAnimation { target: hintText; property: "x"; from: -hintBox.overflow; to: 0; duration: hintBox.overflow * 12; easing.type: Easing.InOutSine }
+                    }
                   }
                 }
                 // unread count from the window title, e.g. "(6) Discord"
