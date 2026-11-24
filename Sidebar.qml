@@ -1677,6 +1677,21 @@ Item {
   // switched off in the editor. Saved per section as "hiddenParts": paths of
   // child indexes from the section's content ("0/3/1").
   property var widgetParts: ({})        // section id -> [{ path, label, depth }]
+  // Trim: px cut off a widget section's top / bottom ("cropTop", "cropBottom"),
+  // for blank space a plugin's panel reserves or bits to cover. While a handle
+  // is dragged in the editor the live values are here, saved on release.
+  property var cropDrag: null           // { id, top, bottom }
+  function cropOf(secId, edge) {
+    if (root.cropDrag && root.cropDrag.id === secId) return edge === "top" ? root.cropDrag.top : root.cropDrag.bottom
+    return Math.max(0, Number(root.setting(secId, edge === "top" ? "cropTop" : "cropBottom")) || 0)
+  }
+  function saveCrop(secId, top, bottom) {
+    var next = JSON.parse(JSON.stringify(root.userSettings))
+    next[secId] = next[secId] || {}
+    next[secId].cropTop = Math.max(0, Math.round(top))
+    next[secId].cropBottom = Math.max(0, Math.round(bottom))
+    root.saveSettings(next)
+  }
   function partKids(o, hiddenItems) {
     var out = []
     var kids = o && o.children ? o.children : []
@@ -3109,21 +3124,26 @@ Item {
           readonly property real k: shrink ? Math.min(1, xbody.width / natW) : 1
           readonly property real fullH: xsec.panel ? Math.max(0, xsec.panel.contentHeight) * xsec.k : (xsec.noPanel ? 20 : 0)
           readonly property int maxH: root.setting(secId, "maxH") || 0
+          readonly property real cropTop: root.cropOf(secId, "top")
+          readonly property real cropBottom: root.cropOf(secId, "bottom")
+          // what's left after trimming the top and bottom
+          readonly property real visH: Math.max(0, xsec.fullH - xsec.cropTop - xsec.cropBottom)
           Flickable {
             id: xbody
             visible: !xsec.collapsed
             Layout.fillWidth: true
-            Layout.preferredHeight: xsec.maxH > 0 ? Math.min(xsec.fullH, xsec.maxH) : xsec.fullH
+            Layout.preferredHeight: xsec.maxH > 0 ? Math.min(xsec.visH, xsec.maxH) : xsec.visH
             // when the sidebar runs out of room it shrinks (and scrolls) instead of
             // pushing the sections above it off the screen
             Layout.minimumHeight: Math.min(Layout.preferredHeight, 90)
             contentWidth: width
-            contentHeight: xsec.fullH
+            contentHeight: xsec.visH
             interactive: contentHeight > height + 1
             boundsBehavior: Flickable.StopAtBounds
             clip: true
             Item {
               id: xinner
+              y: -xsec.cropTop
               width: xsec.shrink ? xsec.natW : xbody.width
               height: xsec.panel ? Math.max(0, xsec.panel.contentHeight) : 0
               scale: xsec.k
@@ -3239,6 +3259,81 @@ Item {
         }
       }
 
+      // ---- pinned sections ----------------------------------------------------
+      // A pinned section keeps a placeholder of its height in the scrolling
+      // column; the section itself is drawn above, with the sidebar's background,
+      // and sticks where it is: at the top or bottom edge (stacked with any other
+      // pinned ones) once scrolling would take it out of view. Not while editing.
+      readonly property bool pinsOn: !root.editing
+      readonly property var pinnedIds: root.sectionOrder.filter(function(id) { return id !== "apps" && root.setting(id, "pinned") === true })
+      onPinnedIdsChanged: Qt.callLater(win.applySectionOrder)
+      onPinsOnChanged: Qt.callLater(win.applySectionOrder)
+      property var pinSlots: ({})
+      property var pinHolders: ({})
+      property int pinRev: 0
+      Item { id: slotParking; visible: false }
+      Item {
+        id: pinLayer
+        x: sideFlick.x; y: sideFlick.y; width: sideFlick.width; height: sideFlick.height
+        z: 5
+      }
+      Component {
+        id: pinSlotComp
+        Item {
+          property var holder: null
+          Layout.fillWidth: true
+          Layout.preferredHeight: holder ? holder.height : 0
+          visible: !!holder && holder.height > 0
+        }
+      }
+      Component {
+        id: pinHolderComp
+        Item {
+          id: ph
+          property string sid: ""
+          property var slot: null
+          readonly property alias col: phCol
+          readonly property var shownPins: win.pinnedIds.filter(function(id) { var h = win.pinHolders[id]; return h && h.active && h.height > 0 })
+          readonly property bool active: win.pinsOn && win.pinnedIds.indexOf(sid) !== -1
+          // the room the pinned sections before and after this one take at the edges
+          readonly property real topOff: { var t = 0, me = shownPins.indexOf(sid); for (var i = 0; i < me; i++) t += win.pinHolders[shownPins[i]].height + mainCol.spacing; return t }
+          readonly property real bottomOff: { var b = 0, me = shownPins.indexOf(sid); if (me < 0) return 0; for (var i = me + 1; i < shownPins.length; i++) b += win.pinHolders[shownPins[i]].height + mainCol.spacing; return b }
+          readonly property real naturalY: slot ? slot.y - sideFlick.contentY : 0
+          visible: active && height > 0
+          width: pinLayer.width
+          height: phCol.implicitHeight
+          y: Math.max(topOff, Math.min(naturalY, pinLayer.height - bottomOff - height))
+          onYChanged: win.pinRev++
+          onHeightChanged: win.pinRev++
+          // the sidebar's background behind it, edge to edge, so what scrolls goes underneath
+          Rectangle {
+            x: -sideFlick.x
+            y: -mainCol.spacing / 2
+            width: win.width
+            height: parent.height + mainCol.spacing
+            color: win.color.a < 1 ? root.background : win.color
+          }
+          ColumnLayout { id: phCol; width: parent.width; spacing: mainCol.spacing }
+        }
+      }
+      function pinParts(id) {
+        if (!win.pinHolders[id]) {
+          var h = pinHolderComp.createObject(pinLayer, { sid: id })
+          var sl = pinSlotComp.createObject(slotParking, { holder: h })
+          h.slot = sl
+          var hs = Object.assign({}, win.pinHolders); hs[id] = h; win.pinHolders = hs
+          var ss = Object.assign({}, win.pinSlots); ss[id] = sl; win.pinSlots = ss
+        }
+        return { holder: win.pinHolders[id], slot: win.pinSlots[id] }
+      }
+      // where the separator above the bottom row is in the window (the overlays
+      // that open above the bottom row sit on it); it may be scrolled or pinned
+      readonly property real bottomEdgeY: {
+        var dep = sideFlick.contentY + sideFlick.height + mainCol.height + bottomSep.y + win.pinRev + (secBottom.visible ? 1 : 0)
+        if (!secBottom.visible || !bottomSep.parent) return sideFlick.y + sideFlick.height
+        return Math.min(sideFlick.y + sideFlick.height, bottomSep.mapToItem(win.contentItem, 0, 0).y - mainCol.spacing)
+      }
+
       // Put the column's pieces in the saved section order (each section moves
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() {
@@ -3248,13 +3343,31 @@ Item {
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
         var items = []
-        root.sectionOrder.forEach(function(id) { (blocks[id] || []).forEach(function(it) { items.push(it) }) })
+        var pinned = {}   // id -> its parts, drawn in its holder above the column
+        root.sectionOrder.forEach(function(id) {
+          if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1 && blocks[id]) {
+            var pp = win.pinParts(id)
+            items.push(pp.slot)
+            pinned[id] = { parts: blocks[id], holder: pp.holder }
+          } else (blocks[id] || []).forEach(function(it) { items.push(it) })
+        })
         var current = []
         for (var i = 0; i < mainCol.children.length; i++) current.push(mainCol.children[i])
-        var same = items.length === current.length && items.every(function(it, k) { return current[k] === it })
+        var holdersOk = Object.keys(pinned).every(function(id) {
+          var c = pinned[id].holder.col.children
+          return pinned[id].parts.length === c.length && pinned[id].parts.every(function(it, k) { return c[k] === it })
+        })
+        var same = holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
         if (same) return
+        // placeholders no longer used go back out of the column
+        for (var sid in win.pinSlots) if (items.indexOf(win.pinSlots[sid]) === -1) win.pinSlots[sid].parent = slotParking
         items.forEach(function(it) { it.parent = null })
         items.forEach(function(it) { it.parent = mainCol })
+        for (var pid in pinned) {
+          pinned[pid].parts.forEach(function(it) { it.parent = null })
+          pinned[pid].parts.forEach(function(it) { it.parent = pinned[pid].holder.col })
+        }
+        win.pinRev++
       }
       Component.onCompleted: Qt.callLater(win.applySectionOrder)
       Connections {
@@ -3348,14 +3461,14 @@ Item {
           for (var i = 0; i < items.length; i++) {
             var it = items[i]
             if (!it || !it.visible) continue
-            top = Math.min(top, mainCol.y + it.y)
-            bottom = Math.max(bottom, mainCol.y + it.y + it.height)
+            top = Math.min(top, sideFlick.y - sideFlick.contentY + it.y)
+            bottom = Math.max(bottom, sideFlick.y - sideFlick.contentY + it.y + it.height)
           }
           return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
         }
         readonly property var boxes: {
           var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
-          var rev = mainCol.height + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
+          var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
           var out = {
             clock: boxFor([secClock]), status: boxFor([secStatus]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
             search: boxFor([secSearch]), media: boxFor([secMedia]), notifications: boxFor([secNotif]), apps: boxFor([appList]), tray: boxFor([secTray]), bottom: boxFor([secBottom])
@@ -3424,6 +3537,56 @@ Item {
                       : ebox.picked ? " · EDITING" : (ebox.hiddenSec ? " · HIDDEN" : ""))
                 color: ebox.picked ? root.background : root.dim
                 font.family: root.fontFamily; font.pixelSize: 8; font.letterSpacing: 1; font.bold: ebox.picked
+              }
+            }
+            // trim handles: drag the top edge down or the bottom edge up to cut that much off
+            Repeater {
+              model: ebox.picked && String(ebox.modelData.id).indexOf("w:") === 0 && !ebox.dragged ? ["top", "bottom"] : []
+              Rectangle {
+                id: trimHandle
+                required property string modelData
+                readonly property string sid: ebox.modelData.id
+                z: 5
+                width: 44; height: 8; radius: 4
+                x: (parent.width - width) / 2 + (modelData === "top" ? 40 : 0)
+                y: modelData === "top" ? -height / 2 : parent.height - height / 2
+                color: trimMouse.containsMouse || trimMouse.pressed ? root.foreground : root.background
+                border.width: 1
+                border.color: root.foreground
+                Rectangle { anchors.centerIn: parent; width: 16; height: 1; color: trimMouse.containsMouse || trimMouse.pressed ? root.background : root.foreground }
+                MouseArea {
+                  id: trimMouse
+                  anchors.fill: parent
+                  anchors.margins: -4
+                  hoverEnabled: true
+                  preventStealing: true
+                  cursorShape: Qt.SizeVerCursor
+                  property real startY: 0
+                  property real startTop: 0
+                  property real startBottom: 0
+                  onPressed: function(mouse) {
+                    startY = mapToItem(editOverlay, mouse.x, mouse.y).y
+                    startTop = root.cropOf(trimHandle.sid, "top")
+                    startBottom = root.cropOf(trimHandle.sid, "bottom")
+                    root.cropDrag = { id: trimHandle.sid, top: startTop, bottom: startBottom }
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (!pressed) return
+                    var dy = mapToItem(editOverlay, mouse.x, mouse.y).y - startY
+                    var x = win.extraItems[trimHandle.sid]
+                    var full = x ? x.fullH : 0
+                    var t = startTop, b = startBottom
+                    if (trimHandle.modelData === "top") t = Math.max(0, Math.min(startTop + dy, full - b - 8))
+                    else b = Math.max(0, Math.min(startBottom - dy, full - t - 8))
+                    root.cropDrag = { id: trimHandle.sid, top: Math.round(t), bottom: Math.round(b) }
+                  }
+                  onReleased: {
+                    var d = root.cropDrag
+                    root.cropDrag = null
+                    if (d) root.saveCrop(d.id, d.top, d.bottom)
+                  }
+                  onCanceled: root.cropDrag = null
+                }
               }
             }
             // remove button, sitting on the outline's top-right corner
@@ -3818,6 +3981,16 @@ Item {
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
               OptRow { label: "Max height"; options: [[0, "auto"], [200, "200"], [300, "300"], [450, "450"]]; current: root.setting(root.editSection, "maxH") || 0; onPicked: function(v) { root.setSetting(root.editSection, "maxH", v) } }
               OptRow { label: "Folded"; options: parent.parent.onOff; current: root.setting(root.editSection, "collapsed") === true; onPicked: function(v) { root.setSetting(root.editSection, "collapsed", v) } }
+              // cut blank space (or unwanted bits) off the top / bottom; also by dragging the outline's edge handles
+              StepRow { label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 4; min: 0; max: 600; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
+              StepRow { label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 4; min: 0; max: 600; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+              Text {
+                visible: root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0
+                textFormat: Text.PlainText; text: "Reset trim"
+                color: resetTrimMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily; font.pixelSize: 10
+                MouseArea { id: resetTrimMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveCrop(root.editSection, 0, 0) }
+              }
               // the widget's own options (from its plugin's settings schema)
               EdHeading {
                 readonly property var schema: (function() {
@@ -3955,6 +4128,20 @@ Item {
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. Hide single plugins there, under Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
+            // every section but the app list can be pinned
+            OptRow {
+              visible: !root.addOpen && root.editSection !== "apps"
+              label: "Pin in position"
+              options: [[true, "on"], [false, "off"]]
+              current: root.setting(root.editSection, "pinned") === true
+              onPicked: function(v) { root.setSetting(root.editSection, "pinned", v) }
+            }
+            Text {
+              visible: !root.addOpen && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: "Stays in view when the sidebar scrolls; the rest scrolls behind it. (Pins rest while editing.)"
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+            }
             Text {
               visible: !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
@@ -4041,11 +4228,41 @@ Item {
         }
       }
 
-      ColumnLayout {
-        id: mainCol
+      // The sections scroll (mouse wheel) when they don't all fit. Mouse drags
+      // don't move it, so dragging apps and sections keeps working.
+      Flickable {
+        id: sideFlick
         anchors.fill: parent
         anchors.margins: 16
         anchors.bottomMargin: 10
+        contentWidth: width
+        contentHeight: mainCol.height
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        acceptedButtons: Qt.NoButton
+        readonly property bool overflowing: contentHeight > height + 1
+        onOverflowingChanged: if (!overflowing) contentY = 0
+      }
+      // a thin scroll indicator on the edge while it overflows
+      Rectangle {
+        visible: sideFlick.overflowing
+        z: 4
+        x: parent.width - 4
+        width: 2
+        radius: 1
+        y: sideFlick.y + sideFlick.contentY / Math.max(1, sideFlick.contentHeight) * sideFlick.height
+        height: Math.max(20, sideFlick.height * sideFlick.height / Math.max(1, sideFlick.contentHeight))
+        color: root.foreground
+        opacity: sideFlick.moving ? 0.5 : 0.18
+        Behavior on opacity { NumberAnimation { duration: 200 } }
+      }
+
+      ColumnLayout {
+        id: mainCol
+        parent: sideFlick.contentItem
+        width: sideFlick.width
+        height: Math.max(sideFlick.height, implicitHeight)
         spacing: 14
 
         // -- clock --------------------------------------------------------
@@ -4669,7 +4886,8 @@ Item {
           Layout.fillWidth: true
           Layout.fillHeight: true
           Layout.preferredHeight: 0
-          Layout.minimumHeight: 0
+          // all of it: when the sidebar runs out of room it scrolls as a whole
+          Layout.minimumHeight: contentHeight
           clip: true
           spacing: 2
           boundsBehavior: Flickable.StopAtBounds
@@ -5433,9 +5651,9 @@ Item {
         visible: pid !== "" && !root.editing && !win.qsHere
                  && (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name === win.monitorName : true)
         z: 21
-        readonly property real bottomY: mainCol.y + (secBottom.visible ? bottomSep.y - mainCol.spacing : mainCol.height)
-        x: mainCol.x
-        width: mainCol.width
+        readonly property real bottomY: win.bottomEdgeY
+        x: sideFlick.x
+        width: sideFlick.width
         height: placeCol.implicitHeight + 24
         y: bottomY - height - 8
         radius: 8
@@ -5482,21 +5700,21 @@ Item {
         id: qsOverlay
         visible: win.qsHere
         z: 20
-        readonly property real bottomY: mainCol.y + (secBottom.visible ? bottomSep.y - mainCol.spacing : mainCol.height)
+        readonly property real bottomY: win.bottomEdgeY
         x: 0
         width: parent.width
-        height: Math.min(settingsPanel.implicitHeight + 7, bottomY - mainCol.y)
+        height: Math.min(settingsPanel.implicitHeight + 7, bottomY - sideFlick.y)
         y: bottomY - height
         color: win.color.a < 1 ? root.background : win.color
         // the separator line the panel always had above it
-        Rectangle { x: mainCol.x; width: mainCol.width; height: 1; color: root.faint }
+        Rectangle { x: sideFlick.x; width: sideFlick.width; height: 1; color: root.faint }
         // swallow clicks and scrolls so they don't reach the sections underneath
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
         Flickable {
           id: qsFlick
           anchors.fill: parent
-          anchors.leftMargin: mainCol.x
-          anchors.rightMargin: mainCol.x
+          anchors.leftMargin: sideFlick.x
+          anchors.rightMargin: sideFlick.x
           anchors.topMargin: 7
           clip: true
           contentHeight: settingsPanel.implicitHeight
