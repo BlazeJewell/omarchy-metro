@@ -1513,7 +1513,7 @@ Item {
     function onRawEvent(event) {
       var n = String(event.name)
       if (n.indexOf("monitoradded") === 0 || n.indexOf("monitorremoved") === 0 || n === "configreloaded") displayRepoll.restart()
-      if (n === "configreloaded") themeProc.running = true
+      if (n === "configreloaded") { themeProc.running = true; animProc.running = true }
     }
   }
   readonly property string refreshScript: Qt.resolvedUrl("refresh.sh").toString().replace("file://", "")
@@ -1820,7 +1820,7 @@ Item {
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
     bottom: { plugins: true },
     tray: { show: true, align: "right" },
-    general: { background: "solid", autohide: false, windowRounding: 10, windowBorder: 0, lookScope: "windows" }
+    general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 10, windowBorder: 0, lookScope: "windows" }
   })
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
   property var userSettings: ({})
@@ -1901,6 +1901,30 @@ Item {
   // The sidebar drawn like a window (Apply to: sidebar / both): inset by
   // Hyprland's gap, rounded, with your theme's window border colour(s).
   readonly property bool panelStyled: root.lookScope !== "windows" && (root.lookRounding > 0 || root.lookBorder > 0)
+  // Hyprland's window move animation, so the sidebar sliding in/out keeps
+  // pace with the windows making room (or taking it back)
+  property int winAnimMs: 379
+  property var winAnimCurve: [0.23, 1, 0.32, 1, 1, 1]
+  Process {
+    id: animProc
+    command: ["hyprctl", "animations", "-j"]
+    running: true
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var d = JSON.parse(text), leaves = d[0] || [], curves = d[1] || []
+          function leaf(n) { return leaves.filter(function(a) { return a.name === n })[0] }
+          // windowsMove falls back to windows when it isn't set itself
+          var a = leaf("windowsMove")
+          if (!a || !a.overridden) a = leaf("windows")
+          if (!a || !a.enabled) { root.winAnimMs = 0; return }
+          root.winAnimMs = Math.round(a.speed * 100)
+          var c = curves.filter(function(b) { return b.name === a.bezier })[0]
+          if (c) root.winAnimCurve = [c.X0, c.Y0, c.X1, c.Y1, 1, 1]
+        } catch (e) {}
+      }
+    }
+  }
   property var themeBorder: ["#33ccff", "#00ff99"]
   property real themeBorderAngle: 45
   property int hyprGap: 10
@@ -2357,8 +2381,11 @@ Item {
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
       implicitWidth: root.sidebarWidth
-      exclusionMode: win.autoHide ? ExclusionMode.Ignore : ExclusionMode.Normal
-      exclusiveZone: win.autoHide ? 0 : root.sidebarWidth
+      // auto-hide "push": windows make room while it's out; "float": it goes over them
+      // (a fullscreen app keeps the whole screen: the sidebar goes over it)
+      readonly property bool pushWhenShown: root.setting("general", "autohideMode") === "push" && !root.barHidden && !win.fsHere
+      exclusionMode: win.autoHide && !win.pushWhenShown ? ExclusionMode.Ignore : ExclusionMode.Normal
+      exclusiveZone: !win.autoHide ? root.sidebarWidth : (win.pushWhenShown && !win.tucked ? root.sidebarWidth : 0)
       // Over a fullscreen window the sidebar slides in with the overview as it opens.
       // On close it waits: the previews zoom back first, and only once the overview is
       // gone does the sidebar slide out (fsOut), so nothing moves at the same time.
@@ -2379,9 +2406,15 @@ Item {
       readonly property real fsSlide: !win.fsAlone ? 0
                                       : win.fsLeaving ? win.fsOut
                                       : win.overviewHere && root.overviewOpen ? 1 - root.ovProgress : 0
-      margins.left: win.tucked ? -(root.sidebarWidth - 4) : -Math.round(root.sidebarWidth * win.fsSlide)
+      // 0 = out, 1 = tucked away; animated like Hyprland moves windows
+      property real tuckAmount: win.tucked ? 1 : 0
+      Behavior on tuckAmount { NumberAnimation { duration: root.winAnimMs; easing.type: Easing.Bezier; easing.bezierCurve: root.winAnimCurve } }
+      margins.left: win.fsSlide > 0 ? -Math.round(root.sidebarWidth * win.fsSlide) : -Math.round((root.sidebarWidth - 4) * win.tuckAmount)
       readonly property color panelColor: Qt.rgba(root.background.r, root.background.g, root.background.b, root.setting("general", "background") === "glass" ? 0.8 : 1)
-      color: root.panelStyled ? "transparent" : panelColor
+      // tucked away with the edge hidden: the 4px strip stays (to hover) but shows nothing
+      readonly property bool edgeHidden: win.tucked && win.tuckAmount > 0.999 && root.setting("general", "autohideEdge") === "hide"
+      color: root.panelStyled || win.edgeHidden ? "transparent" : panelColor
+      Binding { target: win.contentItem; property: "opacity"; value: win.edgeHidden ? 0 : 1 }
       // drawn like a window: inset by Hyprland's gap (top, left, bottom), rounded, bordered
       readonly property int panelInset: root.panelStyled ? root.hyprGap : 0
       readonly property int panelBorderW: root.panelStyled ? root.lookBorder : 0
@@ -4289,6 +4322,8 @@ Item {
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
+            OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› When it appears"; options: [["float", "over windows"], ["push", "push windows"]]; current: root.setting("general", "autohideMode"); onPicked: function(v) { root.setSetting("general", "autohideMode", v) } }
+            OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› Hidden edge"; options: [["show", "show"], ["hide", "hide"]]; current: root.setting("general", "autohideEdge"); onPicked: function(v) { root.setSetting("general", "autohideEdge", v) } }
             // the windows' look (Hyprland), not just the sidebar's
             EdHeading { text: "CORNERS & BORDERS" }
             OptRow { label: "Apply to"; options: [["windows", "windows"], ["sidebar", "sidebar"], ["both", "both"]]; current: root.lookScope; onPicked: function(v) { root.setSetting("general", "lookScope", v) } }
