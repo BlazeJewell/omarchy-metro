@@ -2311,7 +2311,11 @@ Item {
         visible: win.overviewHere
         color: "transparent"
         anchors { top: true; bottom: true; left: true; right: true }
-        margins.left: root.sidebarWidth      // the sidebar is left alone
+        // Starts where the sidebar ends. Over a fullscreen app the sidebar slides in and
+        // out with the overview, so this edge follows it; otherwise the previews would
+        // stay cut off at the sidebar's old edge while it slides away.
+        readonly property int inset: root.sidebarWidth - Math.round(root.sidebarWidth * win.fsSlide)
+        margins.left: inset
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.namespace: "jake-sidebar-overview"
@@ -2437,7 +2441,7 @@ Item {
             // the window's own size and where it sits on screen (this window's coordinates)
             readonly property real srcW: geo ? geo.w : 1600
             readonly property real srcH: geo ? geo.h : 1000
-            readonly property real startX: hidden || !geo ? -srcW : geo.x - win.screen.x - root.sidebarWidth
+            readonly property real startX: hidden || !geo ? -srcW : geo.x - win.screen.x - overviewWin.inset
             readonly property real startY: hidden || !geo ? (overviewWin.height - srcH) / 2 : geo.y - win.screen.y
             // its slot in the grid (a short last row is centred)
             readonly property int col: index % overviewWin.cols
