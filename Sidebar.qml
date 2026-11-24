@@ -685,6 +685,10 @@ Item {
   property var ovGeometry: ({})
   function toggleOverview() {
     if (root.overviewOpen) { root.closeOverview(); return }
+    // the overview replaces whatever the sidebar had open
+    if (root.searching) root.exitSearch("overview")
+    root.qsOpen = false
+    root.closeTrayMenu()
     root.overviewMonitor = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
     ovGeoProc.running = true          // read where each window is, then zoom out
   }
@@ -1877,6 +1881,11 @@ Item {
       // is in use over one (overview, search, settings, editor) lift it to Overlay.
       readonly property bool fsHere: !!(monitor && monitor.activeWorkspace && monitor.activeWorkspace.hasFullscreen)
       readonly property bool lifted: fsHere && win.keepOpen && win.dragItem === null
+      onFsHereChanged: if (fsHere && !root.overviewOpen) {
+        if (root.searching && root.searchMonitor === win.monitorName) root.exitSearch("fullscreen")
+        if (win.qsHere) root.qsOpen = false
+        if (win.trayHere) root.closeTrayMenu()
+      }
       WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
       WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
