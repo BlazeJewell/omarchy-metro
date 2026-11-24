@@ -3316,6 +3316,57 @@ Item {
           ColumnLayout { id: phCol; width: parent.width; spacing: mainCol.spacing }
         }
       }
+      // ---- trimmed built-in sections ------------------------------------------
+      // A built-in section with a trim goes into a clipping box whose content is
+      // shifted up by the top trim and cut short by the bottom one. Untrimmed
+      // sections stay as they are. (Widget sections trim themselves.)
+      function isTrimmable(id) { return id !== "apps" && String(id).indexOf("w:") !== 0 }
+      readonly property var trimmedIds: root.sectionOrder.filter(function(id) {
+        return win.isTrimmable(id) && (root.cropOf(id, "top") > 0 || root.cropOf(id, "bottom") > 0)
+      })
+      onTrimmedIdsChanged: Qt.callLater(win.applySectionOrder)
+      property var trimBoxes: ({})
+      property int trimRev: 0
+      Component {
+        id: trimBoxComp
+        Item {
+          id: tb
+          property string sid: ""
+          readonly property alias col: tbCol
+          readonly property real cutTop: root.cropOf(sid, "top")
+          readonly property real cutBottom: root.cropOf(sid, "bottom")
+          Layout.fillWidth: true
+          Layout.preferredHeight: Math.max(0, tbCol.implicitHeight - cutTop - cutBottom)
+          visible: root.sectionShown(sid) || root.editing
+          clip: true
+          onYChanged: win.trimRev++
+          onHeightChanged: win.trimRev++
+          ColumnLayout { id: tbCol; y: -tb.cutTop; width: tb.width; spacing: mainCol.spacing }
+        }
+      }
+      function trimBox(id) {
+        if (!win.trimBoxes[id]) {
+          var b = trimBoxComp.createObject(slotParking, { sid: id })
+          var bs = Object.assign({}, win.trimBoxes); bs[id] = b; win.trimBoxes = bs
+        }
+        return win.trimBoxes[id]
+      }
+      // a section's untrimmed height (the trim handles can't cut past it)
+      function sectionFullH(id) {
+        if (String(id).indexOf("w:") === 0) { var x = win.extraItems[id]; return x ? x.fullH : 0 }
+        if (win.trimBoxes[id] && win.trimmedIds.indexOf(id) !== -1) return win.trimBoxes[id].col.implicitHeight
+        var parts = win.sectionBlocks()[id] || [], h = 0, n = 0
+        parts.forEach(function(it) { if (it && it.visible) { h += it.height; n++ } })
+        return h + Math.max(0, n - 1) * mainCol.spacing
+      }
+      function sectionBlocks() {
+        var blocks = {
+          clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
+          apps: [menuList, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
+        }
+        for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
+        return blocks
+      }
       function pinParts(id) {
         if (!win.pinHolders[id]) {
           var h = pinHolderComp.createObject(pinLayer, { sid: id })
@@ -3337,11 +3388,10 @@ Item {
       // Put the column's pieces in the saved section order (each section moves
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() {
-        var blocks = {
-          clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
-          apps: [menuList, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
-        }
-        for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
+        var blocks = win.sectionBlocks()
+        // trimmed built-in sections: their parts go in a trim box, and the box takes their place
+        var trimmed = {}
+        win.trimmedIds.forEach(function(id) { if (blocks[id]) { trimmed[id] = { parts: blocks[id], box: win.trimBox(id) }; blocks[id] = [trimmed[id].box] } })
         var items = []
         var pinned = {}   // id -> its parts, drawn in its holder above the column
         root.sectionOrder.forEach(function(id) {
@@ -3357,10 +3407,20 @@ Item {
           var c = pinned[id].holder.col.children
           return pinned[id].parts.length === c.length && pinned[id].parts.every(function(it, k) { return c[k] === it })
         })
-        var same = holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
+        var boxesOk = Object.keys(trimmed).every(function(id) {
+          var c = trimmed[id].box.col.children
+          return trimmed[id].parts.length === c.length && trimmed[id].parts.every(function(it, k) { return c[k] === it })
+        })
+        var same = boxesOk && holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
         if (same) return
-        // placeholders no longer used go back out of the column
+        // placeholders and trim boxes no longer used go back out of the column
         for (var sid in win.pinSlots) if (items.indexOf(win.pinSlots[sid]) === -1) win.pinSlots[sid].parent = slotParking
+        for (var bid in win.trimBoxes) if (!trimmed[bid]) win.trimBoxes[bid].parent = slotParking
+        // a trimmed section's parts into its box first (the box may then be placed or pinned)
+        for (var tid in trimmed) {
+          trimmed[tid].parts.forEach(function(it) { it.parent = null })
+          trimmed[tid].parts.forEach(function(it) { it.parent = trimmed[tid].box.col })
+        }
         items.forEach(function(it) { it.parent = null })
         items.forEach(function(it) { it.parent = mainCol })
         for (var pid in pinned) {
@@ -3460,18 +3520,23 @@ Item {
           var top = 1e9, bottom = -1e9
           for (var i = 0; i < items.length; i++) {
             var it = items[i]
-            if (!it || !it.visible) continue
-            top = Math.min(top, sideFlick.y - sideFlick.contentY + it.y)
-            bottom = Math.max(bottom, sideFlick.y - sideFlick.contentY + it.y + it.height)
+            if (!it || !it.visible || !it.parent) continue
+            var at = it.mapToItem(editOverlay, 0, 0).y
+            top = Math.min(top, at)
+            bottom = Math.max(bottom, at + it.height)
           }
           return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
         }
+        // a trimmed section is outlined by its box (what's left showing)
+        function boxItems(id, items) { return win.trimmedIds.indexOf(id) !== -1 && win.trimBoxes[id] ? [win.trimBoxes[id]] : items }
         readonly property var boxes: {
           var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
           var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
+          var rev3 = win.trimRev + win.trimmedIds.length
           var out = {
-            clock: boxFor([secClock]), status: boxFor([secStatus]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
-            search: boxFor([secSearch]), media: boxFor([secMedia]), notifications: boxFor([secNotif]), apps: boxFor([appList]), tray: boxFor([secTray]), bottom: boxFor([secBottom])
+            clock: boxFor(boxItems("clock", [secClock])), status: boxFor(boxItems("status", [secStatus])), system: boxFor(boxItems("system", [secStats, secNet])),
+            workspaces: boxFor(boxItems("workspaces", [secWs])), search: boxFor(boxItems("search", [secSearch])), media: boxFor(boxItems("media", [secMedia])),
+            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
           }
           for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
           return out
@@ -3541,7 +3606,7 @@ Item {
             }
             // trim handles: drag the top edge down or the bottom edge up to cut that much off
             Repeater {
-              model: ebox.picked && String(ebox.modelData.id).indexOf("w:") === 0 && !ebox.dragged ? ["top", "bottom"] : []
+              model: ebox.picked && ebox.modelData.id !== "apps" && !ebox.dragged ? ["top", "bottom"] : []
               Rectangle {
                 id: trimHandle
                 required property string modelData
@@ -3573,8 +3638,7 @@ Item {
                   onPositionChanged: function(mouse) {
                     if (!pressed) return
                     var dy = mapToItem(editOverlay, mouse.x, mouse.y).y - startY
-                    var x = win.extraItems[trimHandle.sid]
-                    var full = x ? x.fullH : 0
+                    var full = win.sectionFullH(trimHandle.sid)
                     var t = startTop, b = startBottom
                     if (trimHandle.modelData === "top") t = Math.max(0, Math.min(startTop + dy, full - b - 8))
                     else b = Math.max(0, Math.min(startBottom - dy, full - t - 8))
@@ -4112,22 +4176,39 @@ Item {
               Layout.fillWidth: true
               spacing: 6
               EdHeading { text: "PLUGINS" }
-              OptRow { label: "Plugins"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
+              OptRow { label: "All plugin icons"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
               // where each plugin lives
-              EdHeading { visible: root.allPluginEntries.length > 0; text: "WHERE EACH PLUGIN GOES" }
+              // each plugin in the row: on or off (the same switch as quick settings › Sidebar)
+              EdHeading { visible: root.pluginEntries.length > 0; text: "IN THE ROW" }
               Repeater {
-                model: root.allPluginEntries
+                model: root.pluginEntries
                 OptRow {
                   required property var modelData
-                  label: root.widgetName(modelData.id) + (root.pluginPlaces[modelData.id] === "later" ? "  ·  not placed" : "")
-                  options: [["row", "row"]].concat(root.pluginCanSection(modelData.id) ? [["section", "section"]] : []).concat([["status", "status"]])
-                  current: root.pluginPlaces[modelData.id] === "later" || root.pluginPlaces[modelData.id] === undefined ? "" : root.pluginPlaces[modelData.id]
-                  onPicked: function(v) { root.placePlugin(modelData.id, v) }
+                  label: root.widgetName(modelData.id)
+                  options: [[true, "on"], [false, "off"]]
+                  current: !root.isHidden(modelData.id)
+                  onPicked: function(v) { root.setHidden(modelData.id, !v) }
                 }
               }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. Hide single plugins there, under Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text {
+                visible: root.pluginEntries.length > 0 && root.setting("bottom", "plugins") === false
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "All plugin icons are off, so none of these show until that's on again."
+                color: root.urgent; font.family: root.fontFamily; font.pixelSize: 10
+              }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
+            // built-in sections: trim (widget sections have it in their own panel above)
+            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
+            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+            Text {
+              visible: !root.addOpen && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
+              textFormat: Text.PlainText; text: "Reset trim"
+              color: resetTrim2Mouse.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily; font.pixelSize: 10
+              MouseArea { id: resetTrim2Mouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveCrop(root.editSection, 0, 0) }
+            }
             // every section but the app list can be pinned
             OptRow {
               visible: !root.addOpen && root.editSection !== "apps"
@@ -5632,7 +5713,11 @@ Item {
                     inject()
                     Qt.callLater(inject)
                     root.hostedItems = root.hostedItems.concat([phost])
+                    reinject.restart()
                   }
+                  // once more a moment later: a cell made while the row was being rebuilt
+                  // can miss its setup and stay 0 px wide (so it wouldn't show)
+                  Timer { id: reinject; interval: 2000; onTriggered: phost.inject() }
                   onModelDataChanged: inject()
                   Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== phost })
                 }
