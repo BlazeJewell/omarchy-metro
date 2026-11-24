@@ -145,12 +145,14 @@ The installer:
 Undo with `./uninstall.sh` (add `--purge` to delete the plugin and layout too).
 
 Installing with `omarchy plugin add https://github.com/BlazeJewell/omarchy-sidebar`
-works too: the sidebar hooks up its Hyprland side itself the first time it starts
-(`hypr-link.sh`, which reloads Hyprland once). That line skips itself if the plugin
+works too: the first time the sidebar starts it sets itself up (`setup.sh`). It hooks
+up its Hyprland side (`hypr-link.sh`, which reloads Hyprland once), turns off
+Omarchy's dock, and docks notifications top-left. The dock and notification part
+happens once per install, so turning the dock back on later sticks; removing and
+re-adding the plugin sets it up again. The Hyprland line skips itself if the plugin
 folder is removed, and `hypr/` only loads while the sidebar is the bar in use, so
-disabling it gives Super+Space and the rest back to Omarchy. It doesn't copy the
-saved layout, turn off Omarchy's dock, or dock notifications top-left; run
-`install.sh` for those.
+disabling it gives Super+Space and the rest back to Omarchy. The one thing it
+doesn't do is copy the saved layout from `layout/`; run `install.sh` for that.
 
 ## Keeping machines in sync
 
