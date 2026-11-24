@@ -20,8 +20,8 @@ in the middle of your work.
 - **The Super+Space menu types into the panel.** The full Omarchy menu, app search and the
   clipboard all open there instead of in a centred popup.
 - **Quick settings slide over the panel itself**: network, sound, display, power and updates.
-- **Notifications appear inside the panel**, at the top. They slide in from the edge, and the
-  rest of the panel moves down to make room until they're gone.
+- **Notifications appear inside the panel**, at the top, sliding in from the edge over
+  what's there and away again when they're done.
 - **Any Omarchy panel can be a section**, such as media, notifications or AI agents, and its
   keyboard shortcut opens it in place.
 
@@ -76,7 +76,7 @@ services, so updates keep working.
 
 ![One app at a time demo](docs/demo-one-app.gif)
 
-**Notifications appear inside the panel, and everything below makes room for them**
+**Notifications appear inside the panel, at the top**
 
 ![Notifications demo](docs/demo-notifications.gif)
 

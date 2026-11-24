@@ -81,22 +81,6 @@ Item {
   readonly property bool inPanel: barPosition === "left" && panelWidth > 0 && !(barRef && barRef.barHidden)
   readonly property int notificationWidth: inPanel ? Math.max(180, panelWidth - panelInset * 2) : Style.space(380)
   // How far the sidebar moves its content down to make room for the cards.
-  // The sidebar can't reach this service (plugins see only a facade, and this
-  // clone only sees a copy of the bar), so the room it needs is passed through a
-  // small file the sidebar watches: "<monitor> <px>". Only the target is written,
-  // never the animation in between; the sidebar animates to it.
-  readonly property int panelSpace: {
-    var h = Number(layout && layout.height) || 0
-    return inPanel && toasts.count > 0 && h > 0 ? Math.round(h + panelInset * 2) : 0
-  }
-  readonly property string panelNote: targetDisplayName + " " + panelSpace
-  onPanelNoteChanged: panelFile.setText(panelNote + "\n")
-  Timer { running: true; interval: 1; onTriggered: panelFile.setText(service.panelNote + "\n") }   // no stale room after a restart
-  FileView {
-    id: panelFile
-    path: Quickshell.env("XDG_RUNTIME_DIR") + "/jake-sidebar-notifications"
-    printErrors: false
-  }
 
   // ---------------------------------------------------- fullscreen windows
   //
