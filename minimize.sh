@@ -60,8 +60,9 @@ while read -r a wsid ax ay aw ah fl; do
   fi
   # the same tag Omarchy's minimize uses, so its dock knows where a window came from
   [[ $wsid =~ ^[0-9]+$ ]] && batch+=("dispatch hl.dsp.window.tag({ tag = \"+omarchy-minimized-from-$wsid\", $w })")
-  # Park just past the left edge (behind the sidebar), at its own height and size.
-  px=$(( mx + rl - aw - 40 ))
+  # Park fully past the screen's left edge (not just behind the sidebar, which
+  # would show it passing), at its own height and size.
+  px=$(( mx - aw - 40 ))
   batch+=("dispatch hl.dsp.window.set_prop({ prop = \"no_anim\", value = \"unset\", $w })"
           "dispatch hl.dsp.window.move({ x = $px, y = $ay, $w })")
   # Moving onto the special workspace re-places it on screen, and with

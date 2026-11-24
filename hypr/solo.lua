@@ -91,8 +91,9 @@ hl.on("window.open", function(window)
       -- the same tag Omarchy's minimize uses, so its dock knows where a window came from
       hl.dispatch(hl.dsp.window.tag({ tag = "+omarchy-minimized-from-" .. ws.id, window = w }))
       hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = w }))
-      -- park just past the left edge (behind the sidebar), at its own height and size
-      local px = math.floor(mx + rl - aw - 40)
+      -- park fully past the screen's left edge (not just behind the sidebar, whose
+      -- left side would show it), at its own height and size
+      local px = math.floor(mx - aw - 40)
       hl.dispatch(hl.dsp.window.move({ x = px, y = ay, window = w }))
       table.insert(parked, { w = w, x = px, y = ay })
     else
