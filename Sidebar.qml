@@ -2195,7 +2195,7 @@ Item {
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.namespace: "jake-sidebar-overview"
-        WlrLayershell.keyboardFocus: win.overviewHere && root.overviewOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+        WlrLayershell.keyboardFocus: win.overviewHere && root.overviewOpen ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None   // on-demand, not exclusive: exclusive also blocks the pointer from the sidebar
 
         readonly property real p: root.ovProgress
         // dragging one preview onto another
