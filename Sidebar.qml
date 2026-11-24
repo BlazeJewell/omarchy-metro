@@ -446,6 +446,28 @@ Item {
     stdout: StdioCollector { onStreamFinished: root.parseStats(text) }
   }
   Timer { interval: 60000; running: true; repeat: true; triggeredOnStart: true; onTriggered: diskProc.running = true }
+
+  // ---- rice updates (quick settings › Update button) -----------------------
+  readonly property string updateScript: Qt.resolvedUrl("update.sh").toString().replace("file://", "")
+  property string updateCount: ""        // "" checking, "0" up to date, "?" offline, else commits waiting
+  property bool updating: false
+  property real updateCheckedAt: 0
+  Process {
+    id: updateCheckProc
+    command: ["bash", root.updateScript, "check"]
+    stdout: StdioCollector { onStreamFinished: { root.updateCount = text.trim() || "?"; root.updateCheckedAt = Date.now() } }
+  }
+  function checkForUpdates(force) {
+    if (updateCheckProc.running || root.updating) return
+    if (!force && root.updateCount !== "" && Date.now() - root.updateCheckedAt < 300000) return
+    root.updateCount = ""
+    updateCheckProc.running = true
+  }
+  function runUpdate() {
+    root.updating = true
+    Quickshell.execDetached(["bash", root.updateScript, "run"])
+  }
+  Timer { interval: 6 * 3600000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.checkForUpdates(true) }
   function pollStats() {
     fvStat.reload(); fvMem.reload(); fvNet.reload()
     var out = [String(fvStat.text()).split("\n")[0]]
@@ -1237,7 +1259,7 @@ Item {
 
   // ---- settings pages (detail views inside the settings area) --------------
   property string qsPage: ""
-  onQsOpenChanged: if (!qsOpen) { qsPage = ""; qsSection = ""; pwSsid = "" }
+  onQsOpenChanged: if (!qsOpen) { qsPage = ""; qsSection = ""; pwSsid = "" } else checkForUpdates(false)
   onQsPageChanged: {
     pwSsid = ""
     if (root.wifiDevice) root.wifiDevice.scannerEnabled = qsPage === "network"
@@ -5307,6 +5329,51 @@ Item {
                       else { root.closeQuickSettings(); root.enterSearch(win.monitorName); root.openMenu("setup") }
                     }
                   }
+                }
+              }
+            }
+
+            Rectangle {
+              id: updBtn
+              visible: root.qsPage === ""
+              readonly property bool ready: Number(root.updateCount) > 0 && !root.updating
+              readonly property bool busy: root.updating || root.updateCount === ""
+              Layout.fillWidth: true
+              implicitHeight: 28
+              radius: 6
+              color: updBtn.ready ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, updMouse.containsMouse ? 0.3 : 0.18)
+                     : updMouse.containsMouse && !updBtn.busy ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                     : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+              Row {
+                anchors.centerIn: parent
+                spacing: 6
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText
+                  text: updBtn.busy ? "\uf110" : root.updateCount === "0" ? "\uf00c" : root.updateCount === "?" ? "\uf071" : "\uf019"
+                  color: updBtn.ready ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11
+                  RotationAnimator on rotation { running: updBtn.busy && root.qsOpen; from: 0; to: 360; duration: 1200; loops: Animation.Infinite }
+                  onTextChanged: if (!updBtn.busy) rotation = 0
+                }
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText
+                  text: root.updating ? "Updating\u2026"
+                        : root.updateCount === "" ? "Checking for updates\u2026"
+                        : root.updateCount === "0" ? "Rice up to date"
+                        : root.updateCount === "?" ? "Can\u2019t check for updates"
+                        : "Update rice \u00b7 " + root.updateCount + " new"
+                  color: updBtn.ready || updMouse.containsMouse ? root.foreground : root.dim
+                  font.family: root.fontFamily; font.pixelSize: 10; font.bold: updBtn.ready
+                }
+              }
+              MouseArea {
+                id: updMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: updBtn.busy ? Qt.ArrowCursor : Qt.PointingHandCursor
+                onClicked: {
+                  if (updBtn.busy) return
+                  if (updBtn.ready) root.runUpdate()
+                  else root.checkForUpdates(true)
                 }
               }
             }

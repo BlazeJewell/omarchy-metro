@@ -40,6 +40,9 @@ cd ~/.config/omarchy/plugins/jake.sidebar
 ./sync.sh update   # pull plugin / Hyprland changes, keep this machine's layout
 ```
 
+Or use the **Update** button at the bottom of quick settings: it checks GitHub when
+quick settings opens, shows how many updates are waiting, and runs `sync.sh update`.
+
 The layout is the `sidebar-*.json` files: sections and their order, pinned apps,
 hidden icons, profiles. Display scale and refresh rate stay per machine.
 
@@ -49,7 +52,7 @@ hidden icons, profiles. Display scale and refresh rate stay per machine.
 | --- | --- |
 | `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
 | `hypr/` | Hyprland side: `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
-| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU) |
+| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
 | `layout/` | the saved sidebar layout synced between machines |
 | `MenuModel.js` | link to Omarchy's own menu model, so the built-in menu follows Omarchy updates |
 
