@@ -736,7 +736,10 @@ Item {
   // (others minimized first), or beside what's showing with Shift.
   function activateWindow(t, tile) {
     if (!t) return
-    if (!root.isMinimized(t) && t.activated) {
+    // From the overview a click always opens: close it, never minimize.
+    var fromOverview = root.overviewOpen
+    if (fromOverview) root.closeOverview()
+    if (!fromOverview && !root.isMinimized(t) && t.activated) {
       root.dispatchKeepCursor([], "bash " + Util.shellQuote(root.minimizeScript) + " " + Util.shellQuote(root.addrOf(t)))
       return
     }
@@ -757,6 +760,8 @@ Item {
 
   function activateApp(item, tile) {
     if (!item || item.separator) return
+    var fromOverview = root.overviewOpen
+    if (fromOverview) root.closeOverview()
     var wins = item.windows || []
     if (wins.length === 0) {
       var launch = root.launchCommandFor(item)
@@ -773,7 +778,7 @@ Item {
     var head = ""
     var park = ""
 
-    if (focused) {
+    if (focused && !fromOverview) {
       // Slide them out to the left and hide them (minimize.sh).
       head = ""
       park = "bash " + Util.shellQuote(root.minimizeScript) + visible.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("")
