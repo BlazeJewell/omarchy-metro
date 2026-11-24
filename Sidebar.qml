@@ -11,6 +11,7 @@ import Quickshell.Wayland
 import Quickshell.Widgets
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import qs.Commons
 import qs.Commons as Commons
 import "MenuModel.js" as MenuModel
@@ -325,6 +326,39 @@ Item {
   }
   // ---- status row, calendar and battery (what the stock top bar shows) ---------
   readonly property var statusIds: ["omarchy.indicators", "omarchy.system-update", "omarchy.keyboard-layout"]
+  // each one can be turned off in the Status settings
+  readonly property var statusIdSetting: ({ "omarchy.indicators": "indicators", "omarchy.system-update": "update", "omarchy.keyboard-layout": "keyboard" })
+  readonly property var statusIdsShown: root.statusIds.filter(function(id) { return root.setting("status", root.statusIdSetting[id]) !== false })
+  readonly property bool statusBatteryShown: root.batteryPresent && root.setting("status", "battery") !== false
+  // The indicators Omarchy's widget offers ([{value, label}]), from its manifest,
+  // so new ones show up in the settings by themselves.
+  readonly property var indicatorOptions: {
+    var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+    var meta = w && w["omarchy.indicators"] ? w["omarchy.indicators"].metadata || {} : {}
+    var schema = meta.barWidget && Array.isArray(meta.barWidget.schema) ? meta.barWidget.schema : []
+    for (var i = 0; i < schema.length; i++) if (schema[i].key === "items" && Array.isArray(schema[i].options)) return schema[i].options
+    return []
+  }
+  // the chosen ones (none chosen = all of them, as the widget itself reads it)
+  readonly property var indicatorItems: {
+    var v = root.setting("status", "indicatorItems")
+    return Array.isArray(v) ? v : []
+  }
+  function indicatorOn(value) { return root.indicatorItems.length === 0 || root.indicatorItems.indexOf(value) !== -1 }
+  function toggleIndicator(value) {
+    var all = root.indicatorOptions.map(function(o) { return o.value })
+    var on = all.filter(function(v) { return root.indicatorOn(v) })
+    if (root.indicatorOn(value)) {
+      if (on.length <= 1) return          // keep one; "Indicators: off" hides them all
+      on = on.filter(function(v) { return v !== value })
+    } else on.push(value)
+    root.setSetting("status", "indicatorItems", on.length === all.length ? [] : all.filter(function(v) { return on.indexOf(v) !== -1 }))
+  }
+  // settings handed to a status widget on top of its own defaults
+  function statusWidgetSettings(id) {
+    if (id !== "omarchy.indicators") return {}
+    return { items: root.indicatorItems, alwaysShow: root.setting("status", "indicatorsAlways") === true }
+  }
   property bool calendarOpen: false
   property bool clockAlt: false
   property date calMonth: new Date()
@@ -806,6 +840,19 @@ Item {
     var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
     return "bash " + Util.shellQuote(root.soloScript) + " --clear " + here
       + (keep || []).map(function(k) { return " " + Util.shellQuote(root.addrOf(k)) }).join("")
+  }
+  // A gear as an SVG path: `teeth` teeth between radius ri and ro around (cx, cy),
+  // with a round hole of radius rh (fill it with the odd-even rule).
+  function gearPath(cx, cy, ro, ri, rh, teeth) {
+    var step = 2 * Math.PI / teeth, pts = []
+    function pt(a, r) { return (cx + r * Math.cos(a)).toFixed(3) + " " + (cy + r * Math.sin(a)).toFixed(3) }
+    for (var k = 0; k < teeth; k++) {
+      var a = k * step + step / 2       // a gap, not a tooth, where the cut runs
+      pts.push(pt(a - step * 0.36, ri), pt(a - step * 0.22, ro), pt(a + step * 0.22, ro), pt(a + step * 0.36, ri))
+    }
+    var hole = "M " + (cx + rh) + " " + cy + " A " + rh + " " + rh + " 0 1 0 " + (cx - rh) + " " + cy
+             + " A " + rh + " " + rh + " 0 1 0 " + (cx + rh) + " " + cy + " Z"
+    return "M " + pts.join(" L ") + " Z " + hole
   }
   function addrOf(t) { var a = String(t.address || ""); return a.indexOf("0x") === 0 ? a : "0x" + a }
 
@@ -1634,14 +1681,16 @@ Item {
   // Kept in ~/.config/omarchy/sidebar-settings.json; anything not set there
   // uses these defaults, which are how the sidebar looks out of the box.
   readonly property var settingsDefaults: ({
-    clock: { show: true, h24: true, date: true, seconds: false, status: true, calendar: true },
-    system: { show: true, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, refresh: 2 },
+    clock: { show: true, h24: true, date: true, seconds: false, calendar: true },
+    status: { show: true, indicators: true, indicatorItems: [], indicatorsAlways: false, update: true, keyboard: true, battery: true },
+    system: { show: true, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, netGraph: true, refresh: 2 },
     workspaces: { show: true, count: 5, style: "numbers", scroll: true },
     media: { show: false, idle: true },
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true },
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
-    bottom: { plugins: true, tray: true },
+    bottom: { plugins: true },
+    tray: { show: true, align: "right" },
     general: { background: "solid", autohide: false }
   })
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
@@ -1651,7 +1700,7 @@ Item {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object") root.userSettings = v } catch (e) {} }
+    onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object") root.userSettings = root.migrateTray(root.migrateSettings(v)) } catch (e) {} }
   }
   function setting(section, key) {
     var u = root.userSettings[section]
@@ -1660,6 +1709,31 @@ Item {
     return d ? d[key] : undefined
   }
   // While editing, changes only preview (Save writes them, Cancel drops them).
+  // Settings saved by older versions: the row under the clock was part of the
+  // clock section (clock.status, clock.status*); it's the "status" section now.
+  function migrateSettings(v) {
+    var c = v && v.clock
+    if (!c || typeof c !== "object") return v
+    var map = { status: "show", statusIndicators: "indicators", statusIndicatorItems: "indicatorItems", statusIndicatorsAlways: "indicatorsAlways",
+                statusUpdate: "update", statusKeyboard: "keyboard", statusBattery: "battery" }
+    for (var k in map) {
+      if (c[k] === undefined) continue
+      v.status = v.status || {}
+      if (v.status[map[k]] === undefined) v.status[map[k]] = c[k]
+      delete c[k]
+    }
+    return v
+  }
+  function migrateTray(v) {
+    // the tray icons were part of the bottom row (bottom.tray); they're the "tray" section now
+    var b = v && v.bottom
+    if (b && typeof b === "object" && b.tray !== undefined) {
+      v.tray = v.tray || {}
+      if (v.tray.show === undefined) v.tray.show = b.tray
+      delete b.tray
+    }
+    return v
+  }
   function saveSettings(next) {
     if (root.editing) root.editHistory = root.editHistory.concat([JSON.stringify(root.userSettings)]).slice(-50)
     root.userSettings = next
@@ -1685,12 +1759,22 @@ Item {
   // a little taller when apps show a hint line under their name
   readonly property int rowH: (root.setting("apps", "compact") ? 30 : 36) + (root.setting("apps", "hints") !== false ? 4 : 0)
   // Order of the sections down the sidebar (dragged in edit mode).
-  readonly property var defaultOrder: ["clock", "system", "workspaces", "search", "media", "notifications", "apps", "bottom"]
+  readonly property var defaultOrder: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "apps", "tray", "bottom"]
   readonly property var sectionOrder: {
     var saved = Array.isArray(root.userSettings.order) ? root.userSettings.order : []
     var known = root.defaultOrder.concat(root.extraSections.map(function(e) { return e.id }))
     var out = saved.filter(function(id, i) { return known.indexOf(id) !== -1 && saved.indexOf(id) === i })
-    root.defaultOrder.forEach(function(id) { if (out.indexOf(id) === -1) out.push(id) })
+    // a section the saved order doesn't know yet (new in this version) goes
+    // just before the one it comes before by default (else just after the one
+    // it follows), not at the very end
+    root.defaultOrder.forEach(function(id, i) {
+      if (out.indexOf(id) !== -1) return
+      var before = -1, after = -1
+      for (var j = i + 1; j < root.defaultOrder.length && before < 0; j++) before = out.indexOf(root.defaultOrder[j])
+      if (before >= 0) { out.splice(before, 0, id); return }
+      for (var k = i - 1; k >= 0 && after < 0; k--) after = out.indexOf(root.defaultOrder[k])
+      out.splice(after + 1, 0, id)
+    })
     root.extraSections.forEach(function(e) {
       if (out.indexOf(e.id) === -1) { var at = out.indexOf("bottom"); out.splice(at < 0 ? out.length : at, 0, e.id) }
     })
@@ -1702,9 +1786,9 @@ Item {
   property string editMonitor: ""
   property string editSection: "apps"
   readonly property var editSections: [
-    { id: "clock", label: "CLOCK" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
+    { id: "clock", label: "CLOCK" }, { id: "status", label: "STATUS" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
-    { id: "apps", label: "APP LIST" }, { id: "bottom", label: "BOTTOM BAR" }
+    { id: "apps", label: "APP LIST" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
     root.closeQuickSettings()
@@ -1763,7 +1847,7 @@ Item {
     root.saveSettings(next)
     if (root.editSection === id) root.editSection = "apps"
   }
-  readonly property var defaultSectionDesc: ({ media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
+  readonly property var defaultSectionDesc: ({ tray: "Tray icons of running apps", status: "Indicators, update available, keyboard layout and battery", media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
   property bool addOpen: false
   onEditingChanged: if (!editing) addOpen = false
   function removeSection(id) {
@@ -2040,7 +2124,7 @@ Item {
     next[name] = JSON.parse(JSON.stringify(root.userSettings))
     root.writeProfiles(next)
   }
-  function loadProfile(name) { if (root.profiles[name]) root.saveSettings(JSON.parse(JSON.stringify(root.profiles[name]))) }
+  function loadProfile(name) { if (root.profiles[name]) root.saveSettings(root.migrateTray(root.migrateSettings(JSON.parse(JSON.stringify(root.profiles[name]))))) }
   function deleteProfile(name) { var next = Object.assign({}, root.profiles); delete next[name]; root.writeProfiles(next) }
   // Width while the edge is being dragged (saved on release).
   property int liveWidth: 0
@@ -2947,8 +3031,8 @@ Item {
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() {
         var blocks = {
-          clock: [secClock, secStatus, secCalendar], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
-          apps: [menuList, appList], bottom: [dockCol, trayPanel, bottomSep, secBottom]
+          clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
+          apps: [menuList, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
         var items = []
@@ -3022,8 +3106,10 @@ Item {
           readonly property var bottomBox: editOverlay.boxes["bottom"]
           visible: !!bottomBox && editOverlay.dragId === ""
           z: 6
-          x: parent.width - width - 14
-          y: bottomBox ? bottomBox.y - height - 6 : 0
+          // on the bottom section's top edge, between its label and its ×,
+          // so it never covers the section above
+          x: (parent.width - width) / 2
+          y: bottomBox ? bottomBox.y - height / 2 : 0
           width: addText.implicitWidth + 14
           height: 18
           radius: 4
@@ -3057,10 +3143,10 @@ Item {
         }
         readonly property var boxes: {
           var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
-          var rev = mainCol.height + secClock.y + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secBottom.y
+          var rev = mainCol.height + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
           var out = {
-            clock: boxFor([secClock]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
-            search: boxFor([secSearch]), media: boxFor([secMedia]), notifications: boxFor([secNotif]), apps: boxFor([appList]), bottom: boxFor([secBottom])
+            clock: boxFor([secClock]), status: boxFor([secStatus]), system: boxFor([secStats, secNet]), workspaces: boxFor([secWs]),
+            search: boxFor([secSearch]), media: boxFor([secMedia]), notifications: boxFor([secNotif]), apps: boxFor([appList]), tray: boxFor([secTray]), bottom: boxFor([secBottom])
           }
           for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
           return out
@@ -3418,8 +3504,40 @@ Item {
               OptRow { label: "Format"; options: [[true, "24h"], [false, "12h"]]; current: root.setting("clock", "h24"); onPicked: function(v) { root.setSetting("clock", "h24", v) } }
               OptRow { label: "Date"; options: parent.parent.onOff; current: root.setting("clock", "date"); onPicked: function(v) { root.setSetting("clock", "date", v) } }
               OptRow { label: "Seconds"; options: parent.parent.onOff; current: root.setting("clock", "seconds"); onPicked: function(v) { root.setSetting("clock", "seconds", v) } }
-              OptRow { label: "Status icons"; options: parent.parent.onOff; current: root.setting("clock", "status"); onPicked: function(v) { root.setSetting("clock", "status", v) } }
               OptRow { label: "Calendar on click"; options: parent.parent.onOff; current: root.setting("clock", "calendar"); onPicked: function(v) { root.setSetting("clock", "calendar", v) } }
+            }
+            // STATUS (the row under the clock by default)
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "status"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "STATUS" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("status", "show"); onPicked: function(v) { root.setSetting("status", "show", v) } }
+              OptRow { label: "Indicators"; options: parent.parent.onOff; current: root.setting("status", "indicators"); onPicked: function(v) { root.setSetting("status", "indicators", v) } }
+              // which indicators (click to turn one on or off)
+              Flow {
+                visible: root.setting("status", "indicators") !== false && root.indicatorOptions.length > 0
+                Layout.fillWidth: true
+                Layout.leftMargin: 10
+                spacing: 10
+                Repeater {
+                  model: root.indicatorOptions
+                  Text {
+                    required property var modelData
+                    readonly property bool on: root.indicatorOn(modelData.value)
+                    textFormat: Text.PlainText
+                    text: String(modelData.label || modelData.value).toLowerCase()
+                    color: on ? root.foreground : (indMouse.containsMouse ? root.foreground : root.dim)
+                    font.family: root.fontFamily; font.pixelSize: 11; font.bold: on; font.underline: on
+                    MouseArea { id: indMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleIndicator(parent.modelData.value) }
+                  }
+                }
+              }
+              OptRow { visible: root.setting("status", "indicators") !== false; label: "Inactive indicators"; options: [[false, "on hover"], [true, "always"]]; current: root.setting("status", "indicatorsAlways"); onPicked: function(v) { root.setSetting("status", "indicatorsAlways", v) } }
+              OptRow { label: "Update available"; options: parent.parent.onOff; current: root.setting("status", "update"); onPicked: function(v) { root.setSetting("status", "update", v) } }
+              OptRow { label: "Keyboard layout"; options: parent.parent.onOff; current: root.setting("status", "keyboard"); onPicked: function(v) { root.setSetting("status", "keyboard", v) } }
+              OptRow { visible: root.batteryPresent; label: "Battery"; options: parent.parent.onOff; current: root.setting("status", "battery"); onPicked: function(v) { root.setSetting("status", "battery", v) } }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Right under the clock it sits tight against it; drag it anywhere else in the sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
             // SYSTEM
             ColumnLayout {
@@ -3435,6 +3553,7 @@ Item {
               OptRow { visible: root.gpuFound; label: "GPU memory (VRAM)"; options: parent.parent.onOff; current: root.setting("system", "vram"); onPicked: function(v) { root.setSetting("system", "vram", v) } }
               OptRow { visible: root.gpuFound; label: "GPU temperature"; options: parent.parent.onOff; current: root.setting("system", "gpuTemp"); onPicked: function(v) { root.setSetting("system", "gpuTemp", v) } }
               OptRow { label: "Network speed"; options: parent.parent.onOff; current: root.setting("system", "network"); onPicked: function(v) { root.setSetting("system", "network", v) } }
+              OptRow { visible: root.setting("system", "network") !== false; label: "Network graph"; options: parent.parent.onOff; current: root.setting("system", "netGraph"); onPicked: function(v) { root.setSetting("system", "netGraph", v) } }
               StepRow { label: "Refresh every"; value: root.setting("system", "refresh"); min: 1; max: 10; suffix: " s"; onChanged: function(v) { root.setSetting("system", "refresh", v) } }
             }
             // WORKSPACES
@@ -3560,15 +3679,24 @@ Item {
               StepRow { label: "How many"; value: root.setting("notifications", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("notifications", "count", v) } }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The latest from Omarchy's notification history. \"silence\" turns on Do not disturb."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
-            // BOTTOM BAR
+            // TRAY
+            ColumnLayout {
+              visible: !root.addOpen && root.editSection === "tray"
+              Layout.fillWidth: true
+              spacing: 6
+              EdHeading { text: "TRAY" }
+              OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("tray", "show"); onPicked: function(v) { root.setSetting("tray", "show", v) } }
+              OptRow { label: "Align"; options: [["left", "left"], ["right", "right"]]; current: root.setting("tray", "align"); onPicked: function(v) { root.setSetting("tray", "align", v) } }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single tray icons in quick settings (the sidebar's icon in the Plugins row), under Sidebar. A tray icon's menu opens just above the tray."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            }
+            // PLUGINS (the bottom row)
             ColumnLayout {
               visible: !root.addOpen && root.editSection === "bottom"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "BOTTOM BAR" }
+              EdHeading { text: "PLUGINS" }
               OptRow { label: "Plugins"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
-              OptRow { label: "Tray icons"; options: parent.parent.onOff; current: root.setting("bottom", "tray"); onPicked: function(v) { root.setSetting("bottom", "tray", v) } }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single plugins or tray icons in ⚙ › Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. Hide single plugins there, under Sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
             }
 
             Text {
@@ -3703,28 +3831,33 @@ Item {
           }
         }
 
-        // -- status row: indicators, update available, keyboard layout, battery --
+        // -- status: indicators, update available, keyboard layout, battery --
         RowLayout {
           id: secStatus
-          readonly property bool anyShown: root.batteryPresent || statusRep.shownCount > 0
+          readonly property bool anyShown: root.statusBatteryShown || statusRep.shownCount > 0
+          // right under a showing clock it tucks up against it, as one block
+          readonly property bool underClock: root.sectionShown("clock") && root.sectionOrder.indexOf("status") === root.sectionOrder.indexOf("clock") + 1
           // Stays "visible" while empty and collapses to nothing instead, so the
           // hosted widgets' own visibility (e.g. update available) can be read.
-          visible: root.sectionShown("clock") && root.setting("clock", "status") !== false
-          opacity: root.sectionOpacity("clock")
+          visible: root.sectionShown("status")
+          opacity: root.sectionOpacity("status")
           clip: true
           Layout.fillWidth: true
           Layout.preferredHeight: anyShown ? 24 : 0
-          Layout.topMargin: anyShown ? -8 : -mainCol.spacing
+          Layout.topMargin: !anyShown ? -mainCol.spacing : (underClock ? -8 : 0)
           spacing: 2
           Repeater {
             id: statusRep
             property int shownCount: 0
             function recount() { var n = 0; for (var i = 0; i < count; i++) { var it = itemAt(i); if (it && it.shown) n++ } shownCount = n }
-            model: root.statusIds
+            model: root.statusIdsShown
             Loader {
               id: shost
               required property var modelData
               readonly property string moduleName: String(modelData)
+              // the sidebar's own settings for it (Status settings): handed over again when they change
+              readonly property string wanted: JSON.stringify(root.statusWidgetSettings(moduleName))
+              onWantedChanged: inject()
               readonly property var registryEntry: {
                 var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
                 return w ? w[moduleName] || null : null
@@ -3743,7 +3876,7 @@ Item {
                 if ("settings" in item) {
                   var meta = registryEntry && registryEntry.metadata ? registryEntry.metadata : {}
                   var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
-                  item.settings = JSON.parse(JSON.stringify(defs))
+                  item.settings = Object.assign(JSON.parse(JSON.stringify(defs)), JSON.parse(shost.wanted))
                 }
               }
               onLoaded: { inject(); Qt.callLater(inject); Qt.callLater(statusRep.recount) }
@@ -3751,7 +3884,7 @@ Item {
           }
           Item { Layout.fillWidth: true }
           Text {
-            visible: root.batteryPresent
+            visible: root.statusBatteryShown
             textFormat: Text.PlainText
             text: root.batteryGlyph() + " " + root.batteryPct + "%"
             color: !root.batteryCharging && root.batteryPct <= 15 ? root.urgent : root.dim
@@ -3882,6 +4015,7 @@ Item {
               // sparkline
               Row {
                 id: spark
+                visible: root.setting("system", "netGraph") !== false
                 readonly property var hist: modelData[2]
                 readonly property real peak: Math.max.apply(null, [1].concat(hist))
                 Layout.fillWidth: true
@@ -4836,6 +4970,54 @@ Item {
         }
 
 
+        // -- tray: icons of running apps (their menus open just above) -----------
+        RowLayout {
+          id: secTray
+          // while editing it stays (with a placeholder) when there are no icons, so it can be picked and moved
+          visible: root.sectionShown("tray") && (root.trayItemsShown.length > 0 || root.editing)
+          opacity: root.sectionOpacity("tray")
+          Layout.fillWidth: true
+          Layout.preferredHeight: 28
+          spacing: 0
+          Item { visible: root.setting("tray", "align") !== "left"; Layout.fillWidth: true }
+          Text {
+            visible: root.trayItemsShown.length === 0
+            textFormat: Text.PlainText; text: "no tray icons right now"
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+          }
+          Row {
+            spacing: 4
+                Repeater {
+                  model: root.trayItemsShown
+                  Item {
+                    id: trayItem
+                    required property var modelData
+                    width: 28; height: 28
+                    IconImage {
+                      anchors.centerIn: parent
+                      width: 16; height: 16
+                      source: trayItem.modelData.icon
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                      onEntered: tooltip.show(trayItem, trayItem.modelData.tooltipTitle || trayItem.modelData.title || trayItem.modelData.id)
+                      onExited: tooltip.hide(trayItem)
+                      onClicked: function(mouse) {
+                        var item = trayItem.modelData
+                        if (mouse.button === Qt.MiddleButton) { root.closeTrayMenu(); item.activate() }
+                        else if (item.hasMenu) {
+                          if (root.trayMenuItem === item) root.closeTrayMenu()
+                          else root.openTrayMenu(item, win.monitorName)
+                        } else { root.closeTrayMenu(); item.activate() }
+                      }
+                    }
+                  }
+                }
+          }
+          Item { visible: root.setting("tray", "align") === "left"; Layout.fillWidth: true }
+        }
         Rectangle { id: bottomSep; Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
 
         // -- bottom row: quick settings (left), system tray (right) -------------
@@ -4900,11 +5082,35 @@ Item {
               Layout.preferredHeight: 28
               radius: 6
               color: win.qsHere ? root.faint : (gearMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
-              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "\uf013"; color: win.qsHere ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 14 }
+              // The sidebar's own icon, first among the plugins: a gear cut
+              // down the middle with its left half gone (a panel's edge).
+              Item {
+                id: sideIcon
+                // as bright as the plugin icons beside it
+                readonly property color tint: root.foreground
+                readonly property real cx: 6          // where the cut is
+                anchors.centerIn: parent
+                width: 20; height: 20
+                Item {
+                  x: sideIcon.cx; width: parent.width - sideIcon.cx; height: parent.height
+                  clip: true
+                  Shape {
+                    x: -sideIcon.cx; width: 20; height: 20
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                      fillColor: sideIcon.tint
+                      strokeColor: "transparent"
+                      fillRule: ShapePath.OddEvenFill
+                      PathSvg { path: root.gearPath(sideIcon.cx, 10, 8.5, 6.3, 2.8, 8) }
+                    }
+                  }
+                }
+                Rectangle { x: sideIcon.cx - 1; y: 0.5; width: 2; height: 19; radius: 1; color: sideIcon.tint }
+              }
               MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
             }
             Item { Layout.fillWidth: true }
-            // plugin widgets and tray icons share one row of equal cells
+            // plugin widgets, in cells the size of tray icons
             Row {
               spacing: 4
               Repeater {
@@ -4954,34 +5160,6 @@ Item {
                   onModelDataChanged: inject()
                   Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== phost })
                 }
-                }
-              }
-              Repeater {
-                model: root.setting("bottom", "tray") ? root.trayItemsShown : []
-                Item {
-                  id: trayItem
-                  required property var modelData
-                  width: 28; height: 28
-                  IconImage {
-                    anchors.centerIn: parent
-                    width: 16; height: 16
-                    source: trayItem.modelData.icon
-                  }
-                  MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-                    onEntered: tooltip.show(trayItem, trayItem.modelData.tooltipTitle || trayItem.modelData.title || trayItem.modelData.id)
-                    onExited: tooltip.hide(trayItem)
-                    onClicked: function(mouse) {
-                      var item = trayItem.modelData
-                      if (mouse.button === Qt.MiddleButton) { root.closeTrayMenu(); item.activate() }
-                      else if (item.hasMenu) {
-                        if (root.trayMenuItem === item) root.closeTrayMenu()
-                        else root.openTrayMenu(item, win.monitorName)
-                      } else { root.closeTrayMenu(); item.activate() }
-                    }
-                  }
                 }
               }
 
