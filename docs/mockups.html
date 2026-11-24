@@ -1,0 +1,194 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family:"JBN"; src:url("file:///usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"); font-weight:400 }
+@font-face { font-family:"JBN"; src:url("file:///usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf"); font-weight:700 }
+@font-face { font-family:"JBN"; src:url("file:///usr/share/fonts/TTF/JetBrainsMonoNerdFont-Light.ttf"); font-weight:300 }
+:root { --bg:#000; --fg:#fff; --dim:rgba(255,255,255,.55); --faint:rgba(255,255,255,.12); --fainter:rgba(255,255,255,.06);
+        --accent:#8fb3ff; --win:#0e1116; --font:"JBN","JetBrainsMono Nerd Font","JetBrains Mono",monospace; }
+* { box-sizing:border-box; margin:0; padding:0 }
+html,body { background:#15171c; color:var(--fg); font-family:var(--font); overflow:hidden }
+#stage { position:relative }
+.cap { position:absolute; font-size:15px; color:#c9cdd6; letter-spacing:.02em }
+.cap b { color:#fff }
+.sub { font-size:12px; color:#8a90a0 }
+
+/* a screen */
+.screen { position:absolute; background:var(--bg); border-radius:10px; overflow:hidden; box-shadow:0 0 0 2px #2a2e36, 0 18px 50px rgba(0,0,0,.5) }
+.device { position:absolute; background:#22252c; border-radius:28px; box-shadow:0 18px 50px rgba(0,0,0,.55), inset 0 0 0 2px #333844 }
+.device .screen { box-shadow:none; border-radius:16px }
+
+/* the sidebar */
+.side { position:absolute; top:0; bottom:0; left:0; background:var(--bg); display:flex; flex-direction:column; padding:14px 12px; gap:12px; border-right:1px solid var(--fainter) }
+.clock { display:flex; align-items:baseline; justify-content:space-between }
+.clock .t { font-size:2.1em; font-weight:300; letter-spacing:.02em }
+.clock .d { font-size:.62em; color:var(--dim); letter-spacing:.1em }
+.stats { display:flex; gap:.9em; font-size:.6em; color:var(--dim) } .stats b { color:var(--fg); font-size:1.25em }
+.net { display:flex; gap:2em } .net div { font-size:.55em; color:var(--dim) } .net b { display:block; font-size:2.1em; color:var(--fg) }
+.spark { height:1.1em; display:flex; align-items:flex-end; gap:2px } .spark i { flex:1; background:var(--fg); opacity:.75 }
+.wss { display:flex; gap:.45em } .wss span { width:1.7em; height:1.7em; border:1px solid var(--faint); border-radius:4px; font-size:.62em; display:grid; place-items:center; color:var(--dim) }
+.wss span.on { background:var(--fg); color:#000; border-color:var(--fg) } .wss span.has { color:var(--fg); border-color:var(--dim) }
+.search { border:1px solid var(--faint); border-radius:7px; padding:.5em .7em; font-size:.7em; color:var(--dim); display:flex; justify-content:space-between }
+.search .k { border:1px solid var(--dim); border-radius:3px; font-size:.75em; padding:0 .35em; color:var(--fg) }
+.apps { display:flex; flex-direction:column; gap:.15em; font-size:.75em }
+.apps div { padding:.45em .6em; border-radius:6px; display:flex; align-items:center; gap:.6em }
+.apps div::before { content:""; width:.42em; height:.42em; border:1px solid var(--dim); border-radius:50% }
+.apps div.run::before { background:var(--fg); border-color:var(--fg) }
+.apps div.on { background:var(--faint); font-weight:700; box-shadow:inset 2px 0 0 var(--fg) } .apps div.on::before { display:none }
+.apps hr { border:0; height:.6em }
+.grow { flex:1 }
+.widget { font-size:.62em; color:var(--dim); display:flex; flex-direction:column; gap:.5em }
+.widget .row { display:flex; justify-content:space-between; align-items:center } .widget b { color:var(--fg) }
+.bar { height:3px; background:var(--faint); border-radius:2px; position:relative; flex:1; margin:0 .8em } .bar i { position:absolute; left:0; top:0; bottom:0; background:var(--fg); border-radius:2px }
+.bottom { display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--fainter); padding-top:.7em; font-size:.75em; color:var(--dim) }
+.bottom .gear { width:1.9em; height:1.9em; border-radius:6px; background:var(--faint); display:grid; place-items:center; color:var(--fg) }
+.menu { display:flex; flex-direction:column; gap:.15em; font-size:.72em }
+.menu div { padding:.5em .6em; border-radius:6px; display:flex; gap:.7em; color:var(--fg) } .menu div span { color:var(--dim); font-size:.85em }
+.menu div.on { background:var(--faint) }
+.qs { display:flex; flex-direction:column; gap:.1em; font-size:.68em; border-top:1px solid var(--faint); padding-top:.6em }
+.qs div { display:flex; justify-content:space-between; padding:.45em .3em } .qs span { color:var(--dim) }
+.qs .btns { display:flex; gap:.4em } .qs .btns i { flex:1; background:var(--fainter); border-radius:5px; padding:.45em; text-align:center; font-style:normal; color:var(--dim); font-size:.9em }
+
+/* app windows */
+.win { position:absolute; background:var(--win); border-radius:8px; border:1.5px solid rgba(255,255,255,.35); overflow:hidden; padding:4% 5% }
+.win .ttl { height:9px; width:36%; background:rgba(255,255,255,.55); border-radius:3px; margin-bottom:16px }
+.win .ln { height:6px; background:rgba(255,255,255,.14); border-radius:3px; margin:9px 0 }
+.win.music { background:#1a0f1c } .win.files { background:#0d1a12 } .win.web { background:#0c1220 }
+.edge { position:absolute; left:0; top:40%; width:4px; height:20%; background:rgba(255,255,255,.5); border-radius:0 3px 3px 0 }
+.shade { position:absolute; inset:0; background:rgba(0,0,0,.45) }
+.tag { position:absolute; font-size:11px; color:#c9cdd6; background:#2a2e36; padding:3px 8px; border-radius:20px; white-space:nowrap }
+.note { position:absolute; border:1px dashed rgba(143,179,255,.7); border-radius:8px }
+.lbl { position:absolute; font-size:13px; color:var(--accent); white-space:nowrap }
+.lbl::before { content:""; position:absolute; right:100%; top:50%; width:36px; border-top:1px dashed rgba(143,179,255,.7); margin-right:6px }
+.ovgrid { position:absolute; display:grid; gap:14px }
+.ovgrid .win { position:relative; inset:auto }
+.ovlab { font-size:10px; color:var(--dim); text-align:center; margin-top:4px }
+</style></head>
+<body><div id="stage"></div>
+<script>
+const P = new URLSearchParams(location.search)
+const view = P.get("view") || "single"
+const stage = document.getElementById("stage")
+const el = (cls, css, html, parent) => { const d = document.createElement("div"); if (cls) d.className = cls; Object.assign(d.style, css || {}); if (html) d.innerHTML = html; (parent || stage).appendChild(d); return d }
+const spark = n => '<div class="spark">' + Array.from({length:n}, (_, i) => `<i style="height:${15 + Math.abs(Math.sin(i * 1.7) * 85)}%"></i>`).join("") + "</div>"
+const lines = n => '<div class="ttl"></div>' + Array.from({length:n}, (_, i) => `<div class="ln" style="width:${40 + (i * 37) % 55}%"></div>`).join("")
+
+// mode: "home" | "menu" | "qs"
+function sidebar(parent, w, fs, mode, opts) {
+  opts = opts || {}
+  const s = el("side", { width: w + "px", fontSize: fs + "px" }, "", parent)
+  s.innerHTML = `
+    <div data-sec="clock" class="clock"><div class="t">11:44</div><div class="d">TUE 24 NOV</div></div>
+    ${opts.compact ? "" : `<div data-sec="sys" style="display:flex;flex-direction:column;gap:12px"><div class="stats"><span>CPU <b>4%</b></span><span>MEM <b>30%</b></span><span>DSK <b>10%</b></span><span>GPU <b>6%</b></span></div>
+    <div class="net"><div>DOWN<b>12</b></div><div>UP<b>3</b></div></div>${spark(26)}</div>`}
+    <div data-sec="ws" class="wss"><span class="has">1</span><span class="on">2</span><span>3</span><span>4</span><span>5</span></div>
+    <div data-sec="search" class="search"><span>${mode === "menu" ? "<span style='color:#fff'>theme</span>" : "Search…"}</span><span class="k">CLIP</span></div>
+    ${mode === "menu" ? `<div class="menu"><div class="on">◐ Theme <span>Appearance</span></div><div>◐ Theme <span>Install</span></div><div>◐ Theme <span>Remove</span></div><div>▦ Theme Corners <span>Windows</span></div><div>◉ Background <span>Appearance</span></div></div>`
+      : `<div data-sec="apps" class="apps"><div class="run">Browser</div><div>Music</div><div class="run">Files</div><div>Chat</div><hr><div class="on">${opts.active || "Editor"}</div><div class="run">Terminal</div></div>`}
+    <div class="grow"></div>
+    ${mode === "qs" ? `<div class="qs"><div>\uf1eb&nbsp; Network <span>Wi-Fi ›</span></div><div>\uf293&nbsp; Bluetooth <span>On ›</span></div><div>\uf028&nbsp; Sound <span>44% ›</span></div><div>\uf108&nbsp; Display <span>4K · 160 Hz ›</span></div><div>\uf0f3&nbsp; Notifications <span>On ›</span></div><div>\uf011&nbsp; Power <span>Balanced ›</span></div><div class="btns"><i>\uf044 Edit sidebar</i><i>\uf013 All settings</i></div><div class="btns"><i>\uf00c Rice up to date</i></div></div>`
+      : opts.compact ? "" : `<div data-sec="widget" class="widget"><div class="row"><b>Now playing</b><span>▶ ❚❚</span></div><div class="row"><span>0:42</span><div class="bar"><i style="width:35%"></i></div><span>3:10</span></div></div>`}
+    <div data-sec="bottom" class="bottom"><span class="gear">\uf013</span><span>\uf1eb&nbsp; \uf028&nbsp; \uf293&nbsp; \uf240</span></div>`
+  return s
+}
+function appWin(parent, x, y, w, h, kind, n) { const d = el("win " + (kind || ""), { left: x + "px", top: y + "px", width: w + "px", height: h + "px" }, lines(n || 9), parent); return d }
+function screen(x, y, w, h, parent) { return el("screen", { left: x + "px", top: y + "px", width: w + "px", height: h + "px" }, "", parent) }
+function device(x, y, w, h, pad) { const d = el("device", { left: x + "px", top: y + "px", width: w + "px", height: h + "px" }); return screen(pad, pad, w - pad * 2, h - pad * 2, d) }
+function cap(x, y, html, w) { return el("cap", { left: x + "px", top: y + "px", width: (w || 600) + "px" }, html) }
+function size(w, h) { stage.style.width = w + "px"; stage.style.height = h + "px"; document.body.style.width = w + "px"; document.body.style.height = h + "px" }
+
+// ---------------------------------------------------------------- scenes
+const scenes = {
+  single() {
+    size(1600, 1000)
+    cap(60, 36, "<b>Single monitor</b> &nbsp;<span class='sub'>one panel on the left, one app at a time filling the rest</span>", 1400)
+    const s = screen(60, 80, 1480, 832)
+    sidebar(s, 250, 14, "home")
+    appWin(s, 266, 14, 1200, 804, "", 14)
+  },
+  anatomy() {
+    size(1500, 1080)
+    cap(60, 36, "<b>Anatomy</b> &nbsp;<span class='sub'>read top to bottom: time → system → place → find → apps → now → settings</span>", 1400)
+    const s = screen(60, 80, 420, 960)
+    sidebar(s, 420, 17, "home")
+    const marks = [
+      ["clock", "Clock & date", "click: calendar · right-click: week number"],
+      ["sys", "System", "CPU, memory, disk, GPU, network at a glance"],
+      ["ws", "Workspaces", "where you are"],
+      ["search", "Search & menu", "Super+Space types here; the whole Omarchy menu opens in the panel"],
+      ["apps", "Apps", "pinned on top, running below; one click shows one app"],
+      ["widget", "Widgets", "media, notifications, agents… any Omarchy panel"],
+      ["bottom", "Quick settings & tray", "the gear: network, sound, display, power, update"]]
+    const st = stage.getBoundingClientRect()
+    marks.forEach(([id, t, sub]) => {
+      const r = s.querySelector(`[data-sec="${id}"]`).getBoundingClientRect()
+      const y = r.top - st.top - 5, h = r.height + 10
+      el("note", { left: (r.left - st.left - 8) + "px", top: y + "px", width: (r.width + 16) + "px", height: h + "px" })
+      el("lbl", { left: "560px", top: (y + h / 2 - 9) + "px" }, `${t} <span class='sub'>— ${sub}</span>`)
+    })
+  },
+  multi() {
+    size(1820, 800)
+    cap(60, 36, "<b>Multiple monitors</b> &nbsp;<span class='sub'>every monitor gets its own panel; the menu, quick settings and overview open on the one you're using</span>", 1800)
+    const a = screen(60, 150, 760, 428); sidebar(a, 150, 8.4, "home"); appWin(a, 160, 8, 590, 412, "", 12)
+    const b = screen(850, 110, 900, 506); sidebar(b, 170, 9.6, "menu"); appWin(b, 180, 9, 711, 488, "web", 14)
+    el("tag", { left: "1010px", top: "630px" }, "Super+Space here → the menu opens in this panel")
+    el("tag", { left: "250px", top: "596px" }, "its own workspaces, apps & clock")
+    cap(60, 700, "<span class='sub'>Each panel is sized for its screen — the scale is remembered per resolution, and the panel's width can be dragged. Fullscreen apps and games cover the panel until you tap Super.</span>", 1700)
+  },
+  tablet() {
+    size(1700, 820)
+    cap(60, 36, "<b>Tablet-size screens</b> &nbsp;<span class='sub'>a narrower panel in landscape; tucked into the edge in portrait, sliding over the app when needed</span>", 1600)
+    const l = device(60, 120, 860, 612, 22); sidebar(l, 180, 10, "home", {}); appWin(l, 190, 10, 616, 548, "", 12)
+    el("tag", { left: "390px", top: "752px" }, "landscape · panel docked")
+    const p = device(990, 110, 320, 620, 18)
+    appWin(p, 8, 8, 268, 568, "files", 16); el("edge", {}, "", p)
+    el("tag", { left: "1060px", top: "752px" }, "portrait · tucked away")
+    const p2 = device(1340, 110, 320, 620, 18)
+    appWin(p2, 8, 8, 268, 568, "files", 16); el("shade", {}, "", p2); sidebar(p2, 200, 8.6, "home", { compact: true })
+    el("tag", { left: "1365px", top: "752px" }, "touch the edge · it slides over")
+  },
+  phone() {
+    size(1500, 1000)
+    cap(60, 36, "<b>Phone-size screens</b> &nbsp;<span class='sub'>one app at a time is already the phone model — the panel becomes the home screen</span>", 1400)
+    const W = 330, H = 690, pad = 16
+    const a = device(80, 110, W, H, pad); appWin(a, 6, 6, W - pad * 2 - 12, H - pad * 2 - 12, "music", 18); el("edge", {}, "", a)
+    el("tag", { left: "150px", top: "820px" }, "the app, full screen")
+    const b = device(560, 110, W, H, pad); sidebar(b, W - pad * 2, 12, "home", {})
+    el("tag", { left: "605px", top: "820px" }, "swipe from the edge · home")
+    const c = device(1040, 110, W, H, pad); sidebar(c, W - pad * 2, 12, "qs", { compact: true })
+    el("tag", { left: "1085px", top: "820px" }, "gear · quick settings")
+    cap(60, 900, "<span class='sub'>Concept: Omarchy is a desktop, so these sizes show how the same layout scales down — panel width, auto-hide and section choices already exist; touch gestures do not.</span>", 1400)
+  },
+  // responsive: f = 0..1 frame of the shrink animation
+  responsive() {
+    const f = Number(P.get("f") || 0)
+    size(1280, 760)
+    const minW = 340, maxW = 1180
+    // shrink, hold, open the drawer, hold, close, grow back
+    let w, drawer = 0
+    if (f < .35) w = maxW - (maxW - minW) * ease(f / .35)
+    else if (f < .45) w = minW
+    else if (f < .55) { w = minW; drawer = ease((f - .45) / .1) }
+    else if (f < .7) { w = minW; drawer = 1 }
+    else if (f < .78) { w = minW; drawer = 1 - ease((f - .7) / .08) }
+    else w = minW + (maxW - minW) * ease((f - .78) / .22)
+    const h = 640
+    const s = screen((1280 - w) / 2, 70, w, h)
+    let label
+    if (w > 900) {          // desktop: docked
+      const sw = 230; sidebar(s, sw, 13, "home"); appWin(s, sw + 12, 12, w - sw - 24, h - 24, "", 14); label = "desktop · panel docked"
+    } else if (w > 560) {   // tablet: narrow docked
+      const sw = 170; sidebar(s, sw, 10, "home", { compact: true }); appWin(s, sw + 10, 10, w - sw - 20, h - 20, "", 14); label = "tablet · narrower panel"
+    } else {                // phone: tucked drawer
+      appWin(s, 8, 8, w - 16, h - 16, "", 14)
+      if (drawer > 0) { el("shade", { opacity: drawer }, "", s); const sd = sidebar(s, w * .82, 11, "home", { compact: true }); sd.style.transform = `translateX(${-(1 - drawer) * 100}%)` }
+      else el("edge", {}, "", s)
+      label = drawer > 0 ? "phone · panel slides over the app" : "phone · panel tucked to a 4 px edge"
+    }
+    el("cap", { left: "0", width: "1280px", top: "726px", textAlign: "center" }, "<span class='sub'>" + label + " · " + Math.round(w) + " px</span>")
+  },
+}
+function ease(t) { t = Math.max(0, Math.min(1, t)); return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2 }
+scenes[view]()
+</script></body></html>

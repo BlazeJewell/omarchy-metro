@@ -1,12 +1,124 @@
-# jake.sidebar — a left sidebar rice for Omarchy
+# jake.sidebar — everything in one left panel
 
-Replaces Omarchy's top bar with one panel on the left: clock and system stats
-(CPU, memory, disk, GPU, network), workspaces, the Super+Space menu built in,
-pinned and running apps, settings, the system tray and plugins — plus a GNOME-style
-overview on Super, one-app-at-a-time windows that slide in from the left, and an
-editor to rearrange all of it.
+![The sidebar on a single monitor](docs/mock-single.png)
+
+A rice for [Omarchy](https://omarchy.org) that replaces the top bar with one vertical panel on
+the left. The clock, system stats, workspaces, the Super+Space menu, your apps, settings,
+notifications and widgets all live in it, and the rest of the screen belongs to one app at a time.
 
 Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
+
+## Design philosophy
+
+### Everything in one place
+
+A desktop usually spreads its controls around the screen: a bar on top, a launcher in the
+middle, a dock at the bottom, popups in the corners. Here they share **one column on the
+left**. Your eyes and your pointer always go the same way to find something, and nothing opens
+in the middle of your work.
+
+- **The Super+Space menu types into the panel.** The full Omarchy menu, app search and the
+  clipboard all open there instead of in a centred popup.
+- **Quick settings slide over the panel itself**: network, sound, display, power and updates.
+- **Notifications dock next to the panel** at the top left and slide out from behind it.
+- **Any Omarchy panel can be a section**, such as media, notifications or AI agents, and its
+  keyboard shortcut opens it in place.
+
+Why the left? Screens are wide, so a column costs less than a bar costs in height. A column
+reads like a list, top to bottom, and the panel ends where the app's own content begins, which
+is also where you start reading.
+
+### One app at a time
+
+Clicking an app shows **that app, full size**. The one before it slides out to the left.
+Windows of the same app tile side by side. Every motion starts from the panel: apps slide in
+from the left, minimized apps slide back into it, and the panel itself slides away for
+fullscreen games. Tap Super for an overview of everything that's open.
+
+### Ease of use
+
+- **One click, one result.** Click an app to show it. Click it again to hide it.
+- **The panel is the launcher.** Pinned apps sit on top, running apps underneath, and search
+  is always in the same spot.
+- **Familiar keys.** Super+Space for the menu, Super for the overview, Super+Alt+1…9 for
+  pinned apps. Omarchy's own panel shortcuts (Super+Ctrl+A/B/D/N/P…) open inside the panel.
+- **Arranged in place.** *Edit sidebar* outlines each section on the panel itself, so you can
+  reorder, resize, hide and add sections where you see them.
+
+### Simplicity
+
+One panel, one app and one direction of motion. Sections you don't use can be hidden, and the
+panel can auto-hide to a 4 px edge. Underneath it's Omarchy, not a fork: the menu,
+notifications, Do not disturb, update checks and panels all come from Omarchy's own
+services, so updates keep working.
+
+### Readability
+
+![Anatomy of the panel](docs/mock-anatomy.png)
+
+- **Top to bottom, the panel follows one order**: time, then system, workspace, search,
+  apps, what's playing, and settings.
+- **Words over icons.** Apps and settings are listed by name, and icons only support the label.
+- **Two levels of contrast.** What matters, such as the time, values and the current app, is
+  bright. Labels and units are dim, so numbers stand out without colour.
+- **Monospaced and aligned.** Your theme's font, with figures that don't jump around as they
+  change.
+- **Calm by default.** Nothing moves unless you act. The current app has one highlight.
+
+## See it work
+
+| | |
+| --- | --- |
+| **Super+Space: the menu, in the panel** ![Menu demo](docs/demo-menu.gif) | **Quick settings slide over the panel** ![Quick settings demo](docs/demo-quick-settings.gif) |
+
+**One app at a time: each new app slides in from the left and the last one slides out**
+
+![One app at a time demo](docs/demo-one-app.gif)
+
+**Notifications dock top-left and slide out from the panel**
+
+![Notifications demo](docs/demo-notifications.gif)
+
+## Every screen size
+
+The layout is one column plus one app, so it scales down without changing shape. Only the
+column's width and whether it stays docked change.
+
+![The layout from desktop to phone width](docs/responsive.gif)
+
+### Single monitor
+
+The panel is docked on the left and the app fills the rest (see the picture at the top). Drag
+the panel's right edge to resize it. The scale is remembered per resolution, so a 4K and a
+1080p screen each keep their own size.
+
+### Multiple monitors
+
+![Two monitors, each with its own panel](docs/mock-multi.png)
+
+Every monitor gets its own panel, with its own clock, workspaces and apps. The menu, quick
+settings and overview open on the monitor you're using, so you never have to look across to
+another screen. Fullscreen apps and games cover their monitor's panel until you tap Super.
+
+### Tablet-size screens
+
+![Tablet: docked in landscape, tucked in portrait](docs/mock-tablet.png)
+
+In landscape, a narrower panel stays docked. In portrait, turn on auto-hide
+(*Edit sidebar › Whole sidebar*): the panel tucks into a 4 px edge and slides over the app when you
+reach for it, so the app keeps the full width.
+
+### Phone-size screens (concept)
+
+![Phone: the app, the panel as home screen, quick settings](docs/mock-phone.png)
+
+Showing one app at a time is already how phones work. At phone width the panel becomes the
+home screen: the app runs full screen, and pulling the panel out from the edge gives the
+launcher, workspaces and quick settings at full width. Omarchy is a desktop, so this is a
+concept. Panel width, auto-hide and choosing sections exist today; touch gestures don't.
+
+The mockups are drawn from [`docs/mockups.html`](docs/mockups.html), which you can open in a
+browser.
 
 ## Install
 
