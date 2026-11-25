@@ -12,6 +12,7 @@ import Quickshell.Widgets
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Shapes
+import QtQuick.Effects
 import qs.Commons
 import qs.Commons as Commons
 import "MenuModel.js" as MenuModel
@@ -185,7 +186,8 @@ Item {
   // the dark ground the live tiles and boxes sit on
   readonly property color tileGround: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.09)
   readonly property color foreground: root.themePanel ? Commons.Color.bar.text : "#FFFFFF"
-  readonly property color barForeground: Commons.Color.bar.text
+  // what plugin widgets draw with: white on the black Metro panel, the theme's colour otherwise
+  readonly property color barForeground: root.themePanel ? Commons.Color.bar.text : "#FFFFFF"
   readonly property color background: root.themePanel ? Commons.Color.bar.background : "#000000"
   readonly property color urgent: Commons.Color.bar.active
   readonly property color dim: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.55)
@@ -1845,7 +1847,7 @@ Item {
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true, dim: true },
     apps: { running: true, group: true, compact: false, indicator: "bar", icons: true, badges: true, workspace: false, hints: true, hintSymbols: true, tiles: true, bigTiles: 2, systemTiles: { cpu: "small", mem: "small", disk: "small", gpu: "small", net: "medium" } },
-    bottom: { plugins: true },
+    bottom: { plugins: true, whiteIcons: true },
     tray: { show: true, align: "right" },
     general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 0, windowBorder: 0, lookScope: "windows", accent: "#0050EF", panelColor: "black" }
   })
@@ -4633,6 +4635,7 @@ Item {
               spacing: 6
               EdHeading { text: "PLUGINS"; visible: false }
               OptRow { label: "All plugin icons"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
+              OptRow { label: "Icon colour"; options: [[true, "white"], [false, "original"]]; current: root.setting("bottom", "whiteIcons") !== false; onPicked: function(v) { root.setSetting("bottom", "whiteIcons", v) } }
               // where each plugin lives
               // each plugin in the row: on or off (the same switch as quick settings › Sidebar)
               EdHeading { visible: root.pluginEntries.length > 0; text: "IN THE ROW" }
@@ -6587,20 +6590,51 @@ Item {
               }
             }
             Item { Layout.fillWidth: true }
-            // plugin widgets, in cells the size of tray icons
+            // plugin widgets, Metro style: drawn in white, in a round outlined button
+            // (a square one when the widget shows text), like Windows Phone's app bar
             Row {
-              spacing: 4
+              spacing: 8
               Repeater {
                 model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) && !root.widgetTileMap[e.id] })
                 Item {
                   id: pcell
                   required property var modelData
-                  // one 28px cell like the tray icons (wider only if the widget shows text)
-                  width: phost.shown ? Math.max(28, phost.width * phost.scale) : 0
-                  height: 28
+                  readonly property real drawnW: phost.width * phost.scale
+                  // an icon gets a circle; a widget that shows text gets a square-cornered box
+                  // (bar widgets carry some padding, so "wide" means clearly more than an icon)
+                  readonly property bool wide: drawnW > 44
+                  width: phost.shown ? (wide ? drawnW + 14 : 34) : 0
+                  height: 34
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: pcell.wide ? 0 : height / 2
+                    color: pHover.hovered ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent"
+                    border.width: 2
+                    border.color: root.foreground
+                  }
+                  HoverHandler { id: pHover }
                 Loader {
                   id: phost
                   anchors.centerIn: parent
+                  // Metro: plugin icons in one colour (white), however the widget draws itself;
+                  // a widget that shows a picture (a sprite, an avatar) keeps its colours
+                  property bool pictured: false
+                  function findPicture(o, depth) {
+                    if (!o || depth > 8) return false
+                    var t = String(o)
+                    if (t.indexOf("QQuickImage") === 0 || t.indexOf("QQuickAnimatedImage") === 0 || t.indexOf("IconImage") === 0) {
+                      var src = String(o.source || "")
+                      // a themed symbolic icon is still an icon; anything else is a picture
+                      if (src !== "" && src.indexOf("symbolic") === -1) return true
+                    }
+                    var kids = o.children || []
+                    for (var i = 0; i < kids.length; i++) if (findPicture(kids[i], depth + 1)) return true
+                    return false
+                  }
+                  Timer { id: pictureCheck; interval: 1500; onTriggered: phost.pictured = phost.findPicture(phost.item, 0) }
+                  onItemChanged: pictureCheck.restart()
+                  layer.enabled: root.setting("bottom", "whiteIcons") !== false && !root.themePanel && !pictured
+                  layer.effect: MultiEffect { brightness: 1.0; colorization: 1.0; colorizationColor: "#FFFFFF" }
                   // Bar widgets draw icons at Omarchy's bar size; scale them up to
                   // the tray icons' 16px so the row reads as one size.
                   scale: 16 / Math.max(1, Style.bar.iconSize)
