@@ -25,6 +25,7 @@ Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 | Overview (Super) | A panorama: a giant "overview" title, one column per workspace with its caption, the next one peeking in at the edge; ← → move between workspaces |
 | Notifications | Square cards with an accent stripe, inside the top of the column |
 | Corners | Square everywhere, windows included (Edit sidebar › Corners to change) |
+| Edit sidebar | The column's sections become tiles (the rest shrink back, the one you're editing lifts in the accent with a round ✕); beside it a Metro settings page with a pivot (this section · sidebar · profiles), toggle switches, option tiles, round − / + steppers, an accent tile grid, and a round app bar (add · undo · cancel · save) |
 
 Type is [Selawik](https://github.com/microsoft/Selawik), Microsoft's open stand-in for Segoe,
 bundled in `fonts/` under the SIL Open Font License (`fonts/LICENSE-Selawik.txt`). Icon
@@ -66,9 +67,15 @@ classic sidebar's), switches the bar to `jake.metro`, turns off Omarchy's dock a
 notifications. Undo with `./uninstall.sh`, which goes back to the classic sidebar if it is
 installed (`--purge` also deletes this folder and the `metro-*.json` files).
 
+## Shortcuts you can bind
+
+`omarchy-shell jake.metro <command>`: `search`, `overview`, `quickSettings`, `edit`,
+`editTab section|sidebar|profiles`, `editAdd`, `settings <section>`, `launchPinned <n>`.
+
 ## Notes for editing
 
-- Saving `Sidebar.qml` reloads the bar live.
+- Saving `Sidebar.qml` triggers a reload, but the shell can keep the compiled copy:
+  run `omarchy restart shell` to be sure you're seeing the new version.
 - `notifications/` is reached through the `jake.notifications` link, so the shell does not
   see edits there; run `omarchy restart shell` after changing it.
 

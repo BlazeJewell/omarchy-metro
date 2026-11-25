@@ -1088,6 +1088,8 @@ Item {
     function quickSettings() { root.toggleQuickSettings() }
     function launchPinned(n: int) { root.launchPinned(n) }
     function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
+    function editTab(tab: string) { if (!root.editing) root.startEditing(); root.editTab = tab }
+    function editAdd() { if (!root.editing) root.startEditing(); root.addOpen = true }
     function overview() { root.toggleOverview() }
     function settings(section: string) { root.openSettings(section) }
     function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
@@ -2108,6 +2110,9 @@ Item {
   }
   readonly property var defaultSectionDesc: ({ tray: "Tray icons of running apps", status: "Indicators, update available, keyboard layout and battery", media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
   property bool addOpen: false
+  // Metro editor: "section" (the picked section), "sidebar" (the whole column), "profiles"
+  property string editTab: "section"
+  onEditSectionChanged: root.editTab = "section"
   onEditingChanged: if (!editing) addOpen = false
   function removeSection(id) {
     if (!id || id === "bottom") return
@@ -2168,7 +2173,7 @@ Item {
   // The "Add section" picker: searchable, grouped (hidden sections / Omarchy / plugins).
   property string addQuery: ""
   property int addIndex: 0
-  onAddOpenChanged: { addQuery = ""; addIndex = 0 }
+  onAddOpenChanged: { addQuery = ""; addIndex = 0; if (addOpen) editTab = "section" }
   onAddQueryChanged: addIndex = 0
   readonly property var addRows: {
     var q = root.addQuery.toLowerCase().trim()
@@ -3748,7 +3753,7 @@ Item {
         }
         Rectangle {
           readonly property var bottomBox: editOverlay.boxes["bottom"]
-          visible: !!bottomBox && editOverlay.dragId === ""
+          visible: false
           z: 6
           // on the bottom section's top edge, between its label and its ×,
           // so it never covers the section above
@@ -3769,10 +3774,10 @@ Item {
           z: 5
           x: 10
           width: parent.width - 20
-          height: 2
+          height: 4
           radius: 0
           y: editOverlay.dropLineY
-          color: root.foreground
+          color: root.accent
         }
         // each section's extent, from the items that make it up
         function boxFor(items) {
@@ -3816,51 +3821,49 @@ Item {
             opacity: dragged ? (editOverlay.dropHide ? 0.45 : 0.85) : 1
             width: parent.width - 16
             height: box ? box.h : 0
-            // dashed outline (solid for the one being edited)
-            Canvas {
-              anchors.fill: parent
-              visible: !ebox.picked
-              onWidthChanged: requestPaint()
-              onHeightChanged: requestPaint()
-              onPaint: {
-                var ctx = getContext("2d")
-                ctx.reset()
-                ctx.strokeStyle = Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
-                ctx.lineWidth = 1
-                ctx.setLineDash([4, 3])
-                var r = 8, w = width - 1, h = height - 1
-                ctx.beginPath()
-                ctx.moveTo(r + 0.5, 0.5); ctx.lineTo(w - r, 0.5); ctx.arcTo(w, 0.5, w, r, r)
-                ctx.lineTo(w, h - r); ctx.arcTo(w, h, w - r, h, r)
-                ctx.lineTo(r + 0.5, h); ctx.arcTo(0.5, h, 0.5, h - r, r)
-                ctx.lineTo(0.5, r); ctx.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
-                ctx.stroke()
-              }
+            // Metro: each section becomes a tile laid over it, like a start screen being
+            // rearranged. The rest shrink back and fade; the one being edited lifts in
+            // the accent colour. (The real section still shows faintly underneath.)
+            readonly property bool lifted: ebox.picked || ebox.dragged
+            Rectangle {
+              // a soft shadow under the lifted tile
+              visible: ebox.lifted
+              x: 6; y: 9
+              width: parent.width; height: parent.height
+              color: "#000000"
+              opacity: 0.45
             }
             Rectangle {
+              id: etile
               anchors.fill: parent
-              visible: ebox.picked
-              radius: 0
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-              border.width: 2
-              border.color: root.foreground
-            }
-            // the label, sitting on the outline
-            Rectangle {
-              x: 8
-              y: -7
-              width: elabel.implicitWidth + 8
-              height: 13
-              radius: 0
-              color: ebox.picked ? root.foreground : root.background
+              scale: ebox.lifted ? 1.03 : (eMouse.containsMouse ? 0.97 : 0.94)
+              Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.OutCubic } }
+              color: ebox.lifted ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.86)
+                   : Qt.rgba(0.13, 0.13, 0.13, ebox.hiddenSec ? 0.55 : 0.8)
+              border.width: ebox.hiddenSec && !ebox.lifted ? 1 : 0
+              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
               Text {
-                id: elabel
-                anchors.centerIn: parent
+                x: 12
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Math.max(2, Math.min(8, parent.height / 2 - 14))
+                width: parent.width - 24
+                elide: Text.ElideRight
                 textFormat: Text.PlainText
-                text: ebox.modelData.label + (ebox.dragged && editOverlay.dropHide ? " · RELEASE TO REMOVE"
-                      : ebox.picked ? " · EDITING" : (ebox.hiddenSec ? " · HIDDEN" : ""))
-                color: ebox.picked ? root.background : root.dim
-                font.family: root.fontFamily; font.pixelSize: 8; font.letterSpacing: 1; font.bold: ebox.picked
+                text: String(ebox.modelData.label).toLowerCase()
+                color: "#FFFFFF"
+                opacity: ebox.hiddenSec && !ebox.lifted ? 0.55 : 1
+                font.family: root.metroFont; font.weight: Font.Light
+                font.pixelSize: Math.max(13, Math.min(22, parent.height - 14))
+              }
+              Text {
+                visible: parent.height >= 44
+                x: 12; y: 8
+                textFormat: Text.PlainText
+                text: ebox.dragged && editOverlay.dropHide ? "release to hide"
+                    : ebox.picked ? "editing" : (ebox.hiddenSec ? "hidden" : "")
+                color: "#FFFFFF"
+                opacity: 0.8
+                font.family: root.metroFont; font.pixelSize: 12
               }
             }
             // trim handles: drag the top edge down or the bottom edge up to cut that much off
@@ -3912,23 +3915,21 @@ Item {
                 }
               }
             }
-            // remove button, sitting on the outline's top-right corner
+            // round ✕ to hide the section, on the lifted tile's corner (Windows Phone's unpin)
             Rectangle {
-              visible: ebox.modelData.id !== "bottom" && !ebox.dragged
+              visible: ebox.modelData.id !== "bottom" && !ebox.dragged && (ebox.picked || eMouse.containsMouse)
               z: 3
-              x: parent.width - width - 8
-              y: -7
-              width: 15
-              height: 13
-              radius: 0
-              color: xRemMouse.containsMouse ? root.urgent : root.background
-              border.width: 1
-              border.color: xRemMouse.containsMouse ? root.urgent : root.dim
-              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "✕"; color: xRemMouse.containsMouse ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
+              x: parent.width - width / 2 - 6
+              y: -height / 2 + 4
+              width: 28; height: 28; radius: 14
+              color: xRemMouse.containsMouse ? root.accent : "#FFFFFF"
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "\u2715"; color: xRemMouse.containsMouse ? "#FFFFFF" : "#000000"; font.family: root.metroFont; font.pixelSize: 13 }
               MouseArea { id: xRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(ebox.modelData.id) }
             }
             MouseArea {
+              id: eMouse
               anchors.fill: parent
+              hoverEnabled: true
               cursorShape: ebox.dragged ? Qt.ClosedHandCursor : Qt.PointingHandCursor
               acceptedButtons: Qt.LeftButton
               preventStealing: true
@@ -3958,33 +3959,81 @@ Item {
       }
 
       // -- the editor, next to the sidebar ------------------------------------------
+      // Metro editor controls. A two-way on/off (or show/hide) choice is a Windows
+      // Phone toggle switch; any other choice is a row of square tiles, the picked
+      // one filled with the accent.
       component OptRow: Item {
         id: orow
         property string label: ""
         property var options: []      // [[value, text], ...]
         property var current
         signal picked(var value)
+        readonly property bool isSwitch: options.length === 2 && options[0][0] === true && options[1][0] === false
+                                         && ["on", "show"].indexOf(String(options[0][1])) !== -1
+        readonly property bool on: current === true
         Layout.fillWidth: true
-        implicitHeight: 24
-        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: orow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
-        Row {
+        implicitHeight: isSwitch ? 40 : optLabel.implicitHeight + 6 + optFlow.implicitHeight + 4
+        Text {
+          id: optLabel
+          anchors.verticalCenter: orow.isSwitch ? parent.verticalCenter : undefined
+          width: parent.width - (orow.isSwitch ? 64 : 0)
+          textFormat: Text.PlainText
+          text: orow.label.toLowerCase()
+          elide: Text.ElideRight
+          color: orow.isSwitch ? root.foreground : root.dim
+          font.family: root.metroFont; font.pixelSize: orow.isSwitch ? 17 : 13
+        }
+        Item {
+          visible: orow.isSwitch
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          spacing: 0
+          width: 52; height: 24
+          Rectangle {
+            anchors.fill: parent
+            color: "transparent"
+            border.width: 2
+            border.color: root.foreground
+            Rectangle { x: 4; y: 4; height: parent.height - 8; width: orow.on ? parent.width - 16 : 0; color: root.accent
+              Behavior on width { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } } }
+          }
+          Rectangle {
+            width: 10; height: 30; y: -3
+            x: orow.on ? parent.width - width : 0
+            color: root.foreground
+            Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
+          }
+        }
+        MouseArea {
+          visible: orow.isSwitch
+          anchors.fill: parent
+          cursorShape: Qt.PointingHandCursor
+          onClicked: orow.picked(!orow.on)
+        }
+        Flow {
+          id: optFlow
+          visible: !orow.isSwitch
+          y: optLabel.implicitHeight + 6
+          width: parent.width
+          spacing: 6
           Repeater {
-            model: orow.options
-            Row {
+            model: orow.isSwitch ? [] : orow.options
+            Rectangle {
               required property var modelData
-              required property int index
-              Text { visible: index > 0; textFormat: Text.PlainText; text: " / "; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+              readonly property bool sel: orow.current === modelData[0]
+              width: Math.max(48, optText.implicitWidth + 22)
+              height: 34
+              color: sel ? root.accent : (optMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1) : "transparent")
+              border.width: 2
+              border.color: sel ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.45)
               Text {
-                readonly property bool sel: orow.current === modelData[0]
+                id: optText
+                anchors.centerIn: parent
                 textFormat: Text.PlainText
-                text: modelData[1]
-                color: sel ? root.foreground : (optMouse.containsMouse ? root.foreground : root.dim)
-                font.family: root.fontFamily; font.pixelSize: 11; font.bold: sel; font.underline: sel
-                MouseArea { id: optMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: orow.picked(modelData[0]) }
+                text: String(modelData[1]).toLowerCase()
+                color: root.foreground
+                font.family: root.metroFont; font.pixelSize: 14
               }
+              MouseArea { id: optMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: orow.picked(parent.modelData[0]) }
             }
           }
         }
@@ -3999,24 +4048,53 @@ Item {
         property string suffix: ""
         signal changed(real value)
         Layout.fillWidth: true
-        implicitHeight: 24
-        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: srow.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+        implicitHeight: 44
+        Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: srow.label.toLowerCase(); color: root.foreground; font.family: root.metroFont; font.pixelSize: 17 }
         Row {
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          spacing: 8
-          Text { textFormat: Text.PlainText; text: "−"; color: minusMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 12
-            MouseArea { id: minusMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: srow.changed(Math.max(srow.min, srow.value - srow.step)) } }
-          Text { textFormat: Text.PlainText; text: srow.value + srow.suffix; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
-          Text { textFormat: Text.PlainText; text: "+"; color: plusMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 12
-            MouseArea { id: plusMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: srow.changed(Math.min(srow.max, srow.value + srow.step)) } }
+          spacing: 10
+          Repeater {
+            model: [-1, 0, 1]
+            Item {
+              required property int modelData
+              width: modelData === 0 ? Math.max(64, valText.implicitWidth) : 30
+              height: 30
+              Text {
+                id: valText
+                visible: modelData === 0
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: srow.value + srow.suffix
+                color: root.foreground
+                font.family: root.metroFont; font.pixelSize: 20; font.weight: Font.Light
+              }
+              Rectangle {
+                visible: modelData !== 0
+                anchors.fill: parent
+                radius: width / 2
+                color: stepMouse.pressed ? root.foreground : "transparent"
+                border.width: 2
+                border.color: root.foreground
+                Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData < 0 ? "−" : "+"; color: stepMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 17 }
+                MouseArea {
+                  id: stepMouse
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: srow.changed(modelData < 0 ? Math.max(srow.min, srow.value - srow.step) : Math.min(srow.max, srow.value + srow.step))
+                }
+              }
+            }
+          }
         }
       }
       component EdHeading: Text {
         Layout.fillWidth: true
-        Layout.topMargin: 6
+        Layout.topMargin: 12
         textFormat: Text.PlainText
-        color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+        color: root.foreground; font.family: root.metroFont; font.pixelSize: 28; font.weight: Font.Light
+        // headings are written in capitals; Metro reads them in lowercase
+        font.capitalization: Font.AllLowercase
       }
 
       PanelWindow {
@@ -4038,38 +4116,89 @@ Item {
           Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
           Rectangle { width: 1; height: parent.height; color: root.faint }
 
-          ColumnLayout {
+          // the page scrolls; the round app bar stays at the bottom
+          Flickable {
+            id: edFlick
             anchors.fill: parent
             anchors.margins: 20
             anchors.leftMargin: 22
-            spacing: 8
+            anchors.bottomMargin: 92
+            contentWidth: width
+            contentHeight: edCol.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+          ColumnLayout {
+            id: edCol
+            width: edFlick.width
+            height: Math.max(edFlick.height, implicitHeight)
+            spacing: 12
+
+            Text { textFormat: Text.PlainText; text: "EDIT SIDEBAR"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+            // Metro pivot: this section · sidebar · profiles
+            Item {
+              visible: !root.addOpen
+              Layout.fillWidth: true
+              Layout.preferredHeight: 46
+              Layout.topMargin: -8
+              clip: true
+            Row {
+              spacing: 18
+              Repeater {
+                // like a Windows Phone pivot: the current tab comes first, the rest follow it round
+                model: {
+                  var t = [["section", "this section"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
+                  var i = Math.max(0, t.map(function(x) { return x[0] }).indexOf(root.editTab))
+                  return t.slice(i).concat(t.slice(0, i))
+                }
+                Text {
+                  required property var modelData
+                  textFormat: Text.PlainText
+                  text: modelData[1]
+                  color: root.editTab === modelData[0] ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pivMouse.containsMouse ? 0.6 : 0.38)
+                  font.family: root.metroFont; font.pixelSize: 34; font.weight: Font.Light
+                  MouseArea { id: pivMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.editTab = parent.modelData[0] }
+                }
+              }
+            }
+            }
+            // the picked section's name, big
+            Text {
+              visible: root.editTab === "section" && !root.addOpen
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              text: (function() { var e = root.editSections.filter(function(x) { return x.id === root.editSection })[0]; return e ? String(e.label).toLowerCase() : root.editSection.indexOf("w:") === 0 ? root.widgetName(root.widgetOf(root.editSection)).toLowerCase() : root.editSection })()
+              color: root.foreground
+              font.family: root.metroFont; font.pixelSize: 46; font.weight: Font.Light
+            }
 
             RowLayout {
+              visible: false
               Layout.fillWidth: true
               Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 14; font.bold: true }
               Rectangle {
                 implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 0
                 color: cancelMouse.containsMouse ? root.faint : "transparent"
                 border.width: 1; border.color: root.dim
-                Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
+                Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.metroFont; font.pixelSize: 14 }
                 MouseArea { id: cancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.cancelEditing() }
               }
               Rectangle {
                 Layout.leftMargin: 4
                 implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 0
                 color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
-                Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
+                Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.metroFont; font.pixelSize: 14; font.bold: true }
                 MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
               }
             }
             Text {
               Layout.topMargin: 6
               Layout.bottomMargin: 4
-              visible: !root.addOpen
+              visible: false
               textFormat: Text.PlainText
               text: "+ Add section"
               color: addLinkMouse.containsMouse ? root.foreground : root.dim
-              font.family: root.fontFamily; font.pixelSize: 11
+              font.family: root.metroFont; font.pixelSize: 14
               MouseArea { id: addLinkMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = true }
             }
 
@@ -4081,20 +4210,23 @@ Item {
               spacing: 8
               RowLayout {
                 Layout.fillWidth: true
-                Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "ADD SECTION"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10; font.letterSpacing: 1; font.bold: true }
-                Text {
-                  textFormat: Text.PlainText; text: "close ✕"; color: addCloseMouse.containsMouse ? root.foreground : root.dim
-                  font.family: root.fontFamily; font.pixelSize: 10
-                  MouseArea { id: addCloseMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = false }
+                spacing: 14
+                Rectangle {
+                  width: 34; height: 34; radius: 17
+                  color: addCloseMouse.pressed ? root.foreground : "transparent"
+                  border.width: 2; border.color: root.foreground
+                  Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "\u2039"; color: addCloseMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 20 }
+                  MouseArea { id: addCloseMouse; anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = false }
                 }
+                Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "add"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 46; font.weight: Font.Light }
               }
               Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 30
+                Layout.preferredHeight: 40
                 radius: 0
-                color: "transparent"
-                border.width: 1
-                border.color: addInput.activeFocus ? root.dim : root.faint
+                color: addInput.activeFocus ? "#FFFFFF" : "#BFBFBF"
+                border.width: 2
+                border.color: addInput.activeFocus ? root.accent : "transparent"
                 TextInput {
                   id: addInput
                   anchors.fill: parent
@@ -4102,8 +4234,9 @@ Item {
                   anchors.rightMargin: 10
                   verticalAlignment: TextInput.AlignVCenter
                   clip: true
-                  color: root.foreground
-                  font.family: root.fontFamily; font.pixelSize: 11
+                  color: "#000000"
+                  selectionColor: root.accent
+                  font.family: root.metroFont; font.pixelSize: 16
                   onTextChanged: root.addQuery = text
                   Keys.onPressed: function(event) {
                     var n = root.addPickable.length
@@ -4120,8 +4253,8 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !parent.text
                     textFormat: Text.PlainText
-                    text: "Search widgets and sections…"
-                    color: root.dim; font.family: root.fontFamily; font.pixelSize: 11
+                    text: "search sections and plugins"
+                    color: "#555555"; font.family: root.metroFont; font.pixelSize: 16
                   }
                 }
               }
@@ -4139,21 +4272,21 @@ Item {
                   readonly property int pick: root.addPickable.indexOf(modelData)
                   readonly property bool sel: pick >= 0 && pick === root.addIndex
                   width: addList.width
-                  height: modelData.kind === "header" ? 28 : 40
+                  height: modelData.kind === "header" ? 36 : 52
                   Text {
                     visible: arow.modelData.kind === "header"
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 6
                     textFormat: Text.PlainText
-                    text: arow.modelData.name
-                    color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+                    text: String(arow.modelData.name).toLowerCase()
+                    color: root.dim; font.family: root.metroFont; font.pixelSize: 15
                   }
                   Rectangle {
                     visible: arow.modelData.kind !== "header"
                     anchors.fill: parent
                     radius: 0
-                    color: arow.sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) : "transparent"
-                    Rectangle { visible: arow.sel; width: 2; height: parent.height - 12; anchors.verticalCenter: parent.verticalCenter; color: root.foreground }
+                    color: arow.sel ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22) : "transparent"
+                    Rectangle { visible: arow.sel; width: 4; height: parent.height; color: root.accent }
                     ColumnLayout {
                       anchors.fill: parent
                       anchors.leftMargin: 10
@@ -4161,12 +4294,13 @@ Item {
                       spacing: 1
                       RowLayout {
                         Layout.fillWidth: true
-                        Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "+ " + arow.modelData.name; elide: Text.ElideRight
-                          color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; font.bold: arow.sel }
-                        Text { textFormat: Text.PlainText; text: (arow.modelData.cat || "").toLowerCase(); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                        Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: String(arow.modelData.name).toLowerCase(); elide: Text.ElideRight
+                          color: root.foreground; font.family: root.metroFont; font.pixelSize: 20; font.weight: Font.Light }
+                        Text { textFormat: Text.PlainText; text: "+"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 24; font.weight: Font.Light }
                       }
-                      Text { Layout.fillWidth: true; visible: !!arow.modelData.desc; textFormat: Text.PlainText; text: arow.modelData.desc || ""; elide: Text.ElideRight
-                        color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                      Text { Layout.fillWidth: true; visible: !!arow.modelData.desc || !!arow.modelData.cat; textFormat: Text.PlainText
+                        text: [String(arow.modelData.cat || "").toLowerCase(), String(arow.modelData.desc || "")].filter(function(x) { return x }).join(" · "); elide: Text.ElideRight
+                        color: root.dim; font.family: root.metroFont; font.pixelSize: 12 }
                     }
                     MouseArea {
                       anchors.fill: parent
@@ -4182,11 +4316,11 @@ Item {
                 visible: root.addPickable.length === 0
                 textFormat: Text.PlainText
                 text: root.addQuery ? "Nothing matches “" + root.addQuery + "”." : "Everything is already in the sidebar."
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13
               }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "↑↓ to move · Enter to add · Esc to close. A widget section keeps its panel open in the sidebar."
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 12 }
             }
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
 
@@ -4194,10 +4328,10 @@ Item {
 
             // CLOCK
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "clock"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "clock"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "CLOCK" }
+              EdHeading { text: "CLOCK"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("clock", "show"); onPicked: function(v) { root.setSetting("clock", "show", v) } }
               OptRow { label: "Format"; options: [[true, "24h"], [false, "12h"]]; current: root.setting("clock", "h24"); onPicked: function(v) { root.setSetting("clock", "h24", v) } }
               OptRow { label: "Date"; options: parent.parent.onOff; current: root.setting("clock", "date"); onPicked: function(v) { root.setSetting("clock", "date", v) } }
@@ -4206,10 +4340,10 @@ Item {
             }
             // STATUS (the row under the clock by default)
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "status"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "status"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "STATUS" }
+              EdHeading { text: "STATUS"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("status", "show"); onPicked: function(v) { root.setSetting("status", "show", v) } }
               OptRow { label: "Indicators"; options: parent.parent.onOff; current: root.setting("status", "indicators"); onPicked: function(v) { root.setSetting("status", "indicators", v) } }
               // which indicators (click to turn one on or off)
@@ -4226,7 +4360,7 @@ Item {
                     textFormat: Text.PlainText
                     text: String(modelData.label || modelData.value).toLowerCase()
                     color: on ? root.foreground : (indMouse.containsMouse ? root.foreground : root.dim)
-                    font.family: root.fontFamily; font.pixelSize: 11; font.bold: on; font.underline: on
+                    font.family: root.metroFont; font.pixelSize: 14; font.bold: on; font.underline: on
                     MouseArea { id: indMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleIndicator(parent.modelData.value) }
                   }
                 }
@@ -4235,14 +4369,14 @@ Item {
               OptRow { label: "Update available"; options: parent.parent.onOff; current: root.setting("status", "update"); onPicked: function(v) { root.setSetting("status", "update", v) } }
               OptRow { label: "Keyboard layout"; options: parent.parent.onOff; current: root.setting("status", "keyboard"); onPicked: function(v) { root.setSetting("status", "keyboard", v) } }
               OptRow { visible: root.batteryPresent; label: "Battery"; options: parent.parent.onOff; current: root.setting("status", "battery"); onPicked: function(v) { root.setSetting("status", "battery", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Right under the clock it sits tight against it; drag it anywhere else in the sidebar."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Right under the clock it sits tight against it; drag it anywhere else in the sidebar."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // SYSTEM
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "system"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "system"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "SYSTEM" }
+              EdHeading { text: "SYSTEM"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("system", "show"); onPicked: function(v) { root.setSetting("system", "show", v) } }
               OptRow { label: "CPU"; options: parent.parent.onOff; current: root.setting("system", "cpu"); onPicked: function(v) { root.setSetting("system", "cpu", v) } }
               OptRow { label: "Memory"; options: parent.parent.onOff; current: root.setting("system", "mem"); onPicked: function(v) { root.setSetting("system", "mem", v) } }
@@ -4256,32 +4390,32 @@ Item {
             }
             // WORKSPACES
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "workspaces"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "workspaces"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "WORKSPACES" }
+              EdHeading { text: "WORKSPACES"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("workspaces", "show"); onPicked: function(v) { root.setSetting("workspaces", "show", v) } }
               StepRow { label: "Always show"; value: root.setting("workspaces", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("workspaces", "count", v) } }
               OptRow { label: "Style"; options: [["numbers", "numbers"], ["dots", "dots"]]; current: root.setting("workspaces", "style"); onPicked: function(v) { root.setSetting("workspaces", "style", v) } }
               OptRow { label: "Scroll to switch"; options: parent.parent.onOff; current: root.setting("workspaces", "scroll"); onPicked: function(v) { root.setSetting("workspaces", "scroll", v) } }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Workspaces past that appear while they have windows."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Workspaces past that appear while they have windows."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // SEARCH
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "search"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "search"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "SEARCH" }
+              EdHeading { text: "SEARCH"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("search", "show"); onPicked: function(v) { root.setSetting("search", "show", v) } }
               OptRow { label: "CLIP button"; options: parent.parent.onOff; current: root.setting("search", "clip"); onPicked: function(v) { root.setSetting("search", "clip", v) } }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Super+Space opens the search either way."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Super+Space opens the search either way."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // APP LIST
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "apps"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "apps"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "APP LIST" }
+              EdHeading { text: "APP LIST"; visible: false }
               OptRow { label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
               StepRow { visible: root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
               OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
@@ -4293,14 +4427,14 @@ Item {
               OptRow { label: "Status symbols in hints"; options: [[true, "show"], [false, "hide"]]; current: root.setting("apps", "hintSymbols"); onPicked: function(v) { root.setSetting("apps", "hintSymbols", v) } }
               OptRow { label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
               OptRow { label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // a widget section
             ColumnLayout {
-              visible: !root.addOpen && root.editSection.indexOf("w:") === 0
+              visible: root.editTab === "section" && !root.addOpen && root.editSection.indexOf("w:") === 0
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: root.widgetName(root.widgetOf(root.editSection)).toUpperCase() + " · WIDGET" }
+              EdHeading { text: "widget"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting(root.editSection, "show") !== false; onPicked: function(v) { root.setSetting(root.editSection, "show", v) } }
               OptRow { label: "Title"; options: parent.parent.onOff; current: root.setting(root.editSection, "title") === true; onPicked: function(v) { root.setSetting(root.editSection, "title", v) } }
               OptRow { label: "Fit"; options: [["squeeze", "squeeze"], ["shrink", "shrink"]]; current: root.setting(root.editSection, "fit") === "shrink" ? "shrink" : "squeeze"; onPicked: function(v) { root.setSetting(root.editSection, "fit", v) } }
@@ -4313,7 +4447,7 @@ Item {
                 visible: root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0
                 textFormat: Text.PlainText; text: "Reset trim"
                 color: resetTrimMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetTrimMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveCrop(root.editSection, 0, 0) }
               }
               // the widget's own options (from its plugin's settings schema)
@@ -4382,61 +4516,61 @@ Item {
                 visible: partsHeading.parts.length > 0
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "Found by scanning the widget's panel. A part that's only on another tab shows up once that tab is open."
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13
               }
               Text {
                 visible: partsHeading.hidden.length > 0
                 textFormat: Text.PlainText; text: "Show all parts again"
                 color: showAllMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: showAllMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting(root.editSection, "hiddenParts", []) }
               }
               Text {
                 Layout.topMargin: 4
-                textFormat: Text.PlainText; text: "Remove this section"
+                textFormat: Text.PlainText; text: "remove this section"
                 color: remMouse.containsMouse ? root.urgent : root.dim
-                font.family: root.fontFamily; font.pixelSize: 11
+                font.family: root.metroFont; font.pixelSize: 14
                 MouseArea { id: remMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
               }
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "The widget's own panel, kept open here. Squeeze reflows it to the sidebar's width; shrink scales it down whole (better for fixed-width panels like the calendar)."
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // MEDIA
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "media"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "media"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "MEDIA" }
+              EdHeading { text: "MEDIA"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("media", "show"); onPicked: function(v) { root.setSetting("media", "show", v) } }
               OptRow { label: "When nothing plays"; options: [[true, "keep"], [false, "hide"]]; current: root.setting("media", "idle"); onPicked: function(v) { root.setSetting("media", "idle", v) } }
             }
             // NOTIFICATIONS
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "notifications"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "notifications"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "NOTIFICATIONS" }
+              EdHeading { text: "NOTIFICATIONS"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("notifications", "show"); onPicked: function(v) { root.setSetting("notifications", "show", v) } }
               StepRow { label: "How many"; value: root.setting("notifications", "count"); min: 1; max: 10; onChanged: function(v) { root.setSetting("notifications", "count", v) } }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The latest from Omarchy's notification history. \"silence\" turns on Do not disturb."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The latest from Omarchy's notification history. \"silence\" turns on Do not disturb."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // TRAY
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "tray"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "tray"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "TRAY" }
+              EdHeading { text: "TRAY"; visible: false }
               OptRow { label: "Show in sidebar"; options: parent.parent.onOff; current: root.setting("tray", "show"); onPicked: function(v) { root.setSetting("tray", "show", v) } }
               OptRow { label: "Align"; options: [["left", "left"], ["right", "right"]]; current: root.setting("tray", "align"); onPicked: function(v) { root.setSetting("tray", "align", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single tray icons in quick settings (the sidebar's icon in the Plugins row), under Sidebar. A tray icon's menu opens just above the tray."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Hide single tray icons in quick settings (the sidebar's icon in the Plugins row), under Sidebar. A tray icon's menu opens just above the tray."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // PLUGINS (the bottom row)
             ColumnLayout {
-              visible: !root.addOpen && root.editSection === "bottom"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection === "bottom"
               Layout.fillWidth: true
               spacing: 6
-              EdHeading { text: "PLUGINS" }
+              EdHeading { text: "PLUGINS"; visible: false }
               OptRow { label: "All plugin icons"; options: parent.parent.onOff; current: root.setting("bottom", "plugins"); onPicked: function(v) { root.setSetting("bottom", "plugins", v) } }
               // where each plugin lives
               // each plugin in the row: on or off (the same switch as quick settings › Sidebar)
@@ -4455,52 +4589,55 @@ Item {
                 visible: root.pluginEntries.length > 0 && root.setting("bottom", "plugins") === false
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "All plugin icons are off, so none of these show until that's on again."
-                color: root.urgent; font.family: root.fontFamily; font.pixelSize: 10
+                color: root.urgent; font.family: root.metroFont; font.pixelSize: 13
               }
-              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+              Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
 
             // built-in sections: trim (widget sections have it in their own panel above)
-            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
-            StepRow { visible: !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+            StepRow { visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
+            StepRow { visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
             Text {
-              visible: !root.addOpen && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
+              visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
               textFormat: Text.PlainText; text: "Reset trim"
               color: resetTrim2Mouse.containsMouse ? root.foreground : root.dim
-              font.family: root.fontFamily; font.pixelSize: 10
+              font.family: root.metroFont; font.pixelSize: 13
               MouseArea { id: resetTrim2Mouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveCrop(root.editSection, 0, 0) }
             }
             // every section but the app list can be pinned
             OptRow {
-              visible: !root.addOpen && root.editSection !== "apps"
+              visible: root.editTab === "section" && !root.addOpen && root.editSection !== "apps"
               label: "Pin in position"
               options: [[true, "on"], [false, "off"]]
               current: root.setting(root.editSection, "pinned") === true
               onPicked: function(v) { root.setSetting(root.editSection, "pinned", v) }
             }
             Text {
-              visible: !root.addOpen && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
+              visible: root.editTab === "section" && !root.addOpen && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
               Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
               text: "Stays in view when the sidebar scrolls; the rest scrolls behind it. (Pins rest while editing.)"
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+              color: root.dim; font.family: root.metroFont; font.pixelSize: 13
             }
             Text {
-              visible: !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
+              visible: root.editTab === "section" && !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
-              textFormat: Text.PlainText; text: "Remove this section"
+              textFormat: Text.PlainText; text: "remove this section"
               color: bRemMouse.containsMouse ? root.urgent : root.dim
-              font.family: root.fontFamily; font.pixelSize: 11
+              font.family: root.metroFont; font.pixelSize: 14
               MouseArea { id: bRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
             }
-            Item { visible: !root.addOpen; Layout.fillHeight: true }
+            Item { visible: root.editTab === "section" && !root.addOpen; Layout.fillHeight: true }
 
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
-            EdHeading { text: "WHOLE SIDEBAR" }
+            ColumnLayout {
+            visible: root.editTab === "sidebar" && !root.addOpen
+            Layout.fillWidth: true
+            spacing: 12
+            EdHeading { text: "WHOLE SIDEBAR"; visible: false }
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 200; max: 560; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
             OptRow { label: "Panel colour"; options: [["black", "black"], ["theme", "theme"]]; current: root.setting("general", "panelColor"); onPicked: function(v) { root.setSetting("general", "panelColor", v) } }
             // Metro accent: Windows Phone 8's twenty
-            Text { textFormat: Text.PlainText; text: "Accent"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+            Text { textFormat: Text.PlainText; text: "accent"; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             Flow {
               Layout.fillWidth: true
               spacing: 4
@@ -4509,9 +4646,9 @@ Item {
                 Rectangle {
                   required property var modelData
                   readonly property bool sel: String(root.accent).toLowerCase() === String(modelData[0]).toLowerCase()
-                  width: 22; height: 22
+                  width: Math.floor((parent.width - 16) / 5); height: 40
                   color: modelData[0]
-                  border.width: sel ? 2 : 0
+                  border.width: sel ? 3 : 0
                   border.color: root.foreground
                   MouseArea {
                     anchors.fill: parent
@@ -4537,10 +4674,21 @@ Item {
               text: root.lookScope === "windows" ? "Your windows' corners and borders."
                   : root.lookScope === "sidebar" ? "The sidebar is drawn like a window, in your theme's border colour; windows keep your Hyprland config's look."
                   : "Windows and the sidebar alike, in your theme's border colour."
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+              color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+            }
             }
             // profiles: saved layouts to switch between
-            EdHeading { text: "PROFILES" }
+            ColumnLayout {
+            visible: root.editTab === "profiles" && !root.addOpen
+            Layout.fillWidth: true
+            spacing: 12
+            EdHeading { text: "PROFILES"; visible: false }
+            Text {
+              visible: Object.keys(root.profiles).length === 0
+              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+              text: "No profiles yet. Save this layout to switch back to it later, or to keep one for each machine."
+              color: root.dim; font.family: root.metroFont; font.pixelSize: 15
+            }
             Flow {
               Layout.fillWidth: true
               spacing: 12
@@ -4548,62 +4696,109 @@ Item {
                 model: Object.keys(root.profiles).sort()
                 Row {
                   required property var modelData
-                  spacing: 4
-                  Text { textFormat: Text.PlainText; text: modelData; color: prLoad.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; font.underline: prLoad.containsMouse
+                  width: parent.width
+                  spacing: 12
+                  Text { textFormat: Text.PlainText; text: modelData; color: prLoad.containsMouse ? root.accentText : root.foreground; font.family: root.metroFont; font.pixelSize: 30; font.weight: Font.Light
                     MouseArea { id: prLoad; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.loadProfile(modelData) } }
-                  Text { textFormat: Text.PlainText; text: "✕"; color: prDel.containsMouse ? root.urgent : root.faint; font.family: root.fontFamily; font.pixelSize: 9
+                  Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: "✕"; color: prDel.containsMouse ? root.urgent : root.dim; font.family: root.metroFont; font.pixelSize: 15
                     MouseArea { id: prDel; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.deleteProfile(modelData) } }
                 }
               }
               Text {
                 visible: !root.profileNaming
-                textFormat: Text.PlainText; text: "+ save current as…"; color: prNew.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11
+                textFormat: Text.PlainText; text: "+ save this layout as…"; color: prNew.containsMouse ? root.foreground : root.accentText; font.family: root.metroFont; font.pixelSize: 20; font.weight: Font.Light
                 MouseArea { id: prNew; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.profileNaming = true }
               }
             }
             Rectangle {
               visible: root.profileNaming
               Layout.fillWidth: true
-              Layout.preferredHeight: 26
-              radius: 0; color: "transparent"; border.width: 1; border.color: root.dim
+              Layout.preferredHeight: 40
+              radius: 0; color: "#FFFFFF"; border.width: 2; border.color: root.accent
               TextInput {
                 id: profileInput
                 anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
                 verticalAlignment: TextInput.AlignVCenter
-                color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; clip: true
+                color: "#000000"; selectionColor: root.accent; font.family: root.metroFont; font.pixelSize: 16; clip: true
                 Keys.onReturnPressed: { root.saveProfile(text); text = ""; root.profileNaming = false }
                 Keys.onEnterPressed: { root.saveProfile(text); text = ""; root.profileNaming = false }
                 Keys.onEscapePressed: { text = ""; root.profileNaming = false }
                 Connections { target: root; function onProfileNamingChanged() { if (root.profileNaming) Qt.callLater(function() { profileInput.forceActiveFocus() }) } }
-                Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "Profile name, then Enter"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "profile name, then enter"; color: "#555555"; font.family: root.metroFont; font.pixelSize: 16 }
               }
             }
+            }
+            Item { visible: root.editTab !== "section" || root.addOpen; Layout.fillHeight: true }
             RowLayout {
               Layout.fillWidth: true
               Text {
-                textFormat: Text.PlainText; text: "Reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                textFormat: Text.PlainText; text: "reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
               }
               Text {
                 Layout.leftMargin: 12
                 visible: root.editHistory.length > 0
-                textFormat: Text.PlainText; text: "Undo"; color: undoMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                textFormat: Text.PlainText; text: "undo"; color: undoMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: undoMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.undoEdit() }
               }
               Text {
                 Layout.leftMargin: 12
-                textFormat: Text.PlainText; text: "Reset all"; color: resetAllMouse.containsMouse ? root.urgent : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                textFormat: Text.PlainText; text: "reset all"; color: resetAllMouse.containsMouse ? root.urgent : root.dim
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetAllMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetAll() }
               }
               Item { Layout.fillWidth: true }
               Text {
                 visible: JSON.stringify(root.sectionOrder) !== JSON.stringify(root.defaultOrder)
-                textFormat: Text.PlainText; text: "Reset order"; color: resetOrderMouse.containsMouse ? root.foreground : root.dim
-                font.family: root.fontFamily; font.pixelSize: 10
+                textFormat: Text.PlainText; text: "reset order"; color: resetOrderMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetOrderMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting("", "order", root.defaultOrder) }
+              }
+            }
+          }
+          }
+          // Metro app bar: add · undo · cancel · save
+          Rectangle {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            height: 78
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+            Row {
+              anchors.centerIn: parent
+              spacing: 26
+              Repeater {
+                model: [["+", "add", "add"], ["\u21ba", "undo", "undo"], ["\u2715", "cancel", "cancel"], ["\u2713", "save", "save"]]
+                Column {
+                  id: edBtn
+                  required property var modelData
+                  readonly property bool off: modelData[2] === "undo" && root.editHistory.length === 0
+                  readonly property bool on: modelData[2] === "add" && root.addOpen
+                  spacing: 4
+                  opacity: off ? 0.35 : 1
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 38; height: 38; radius: 19
+                    color: edBtn.on || edBtnMouse.pressed ? root.foreground : "transparent"
+                    border.width: 2
+                    border.color: root.foreground
+                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: edBtn.modelData[0]; color: edBtn.on || edBtnMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 18 }
+                    MouseArea {
+                      id: edBtnMouse
+                      anchors.fill: parent
+                      enabled: !edBtn.off
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        var k = edBtn.modelData[2]
+                        if (k === "add") root.addOpen = !root.addOpen
+                        else if (k === "undo") root.undoEdit()
+                        else if (k === "cancel") root.cancelEditing()
+                        else root.saveEditing()
+                      }
+                    }
+                  }
+                  Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: edBtn.modelData[1]; color: root.foreground; font.family: root.metroFont; font.pixelSize: 12 }
+                }
               }
             }
           }
