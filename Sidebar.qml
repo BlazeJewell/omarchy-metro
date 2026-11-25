@@ -2832,9 +2832,24 @@ Item {
         readonly property real cellH: (height - pad - topPad - gap * (rowsN - 1)) / rowsN
         function lerp(a, b) { return a + (b - a) * overviewWin.p }
 
+        // jake.sidebar: the wallpaper behind the previews, so the overview looks
+        // the same over a fullscreen app as over the desktop
+        Image {
+          visible: root.wallPath !== ""
+          x: -overviewWin.inset
+          width: overviewWin.screen ? overviewWin.screen.width : 0
+          height: overviewWin.screen ? overviewWin.screen.height : 0
+          source: root.wallPath === "" ? "" : "file://" + root.wallPath
+          fillMode: Image.PreserveAspectCrop
+          sourceSize.width: width
+          sourceSize.height: height
+          asynchronous: true
+          opacity: overviewWin.p
+        }
         Rectangle {
           anchors.fill: parent
-          color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)   // fully opaque
+          // a light tint over the wallpaper keeps the text readable; opaque without one
+          color: Qt.rgba(root.background.r, root.background.g, root.background.b, root.wallPath !== "" ? 0.35 : 1)
           opacity: overviewWin.p
           focus: true
           Keys.onPressed: function(event) {
