@@ -1092,6 +1092,7 @@ Item {
     function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
     function editTab(tab: string) { if (!root.editing) root.startEditing(); root.editTab = tab }
     function editAdd() { if (!root.editing) root.startEditing(); root.addOpen = true }
+    function editWidget(id: string) { if (!root.editing) root.startEditing(); root.editSection = id }
     function overview() { root.toggleOverview() }
     function settings(section: string) { root.openSettings(section) }
     function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
@@ -2012,6 +2013,10 @@ Item {
   readonly property int rowH: (root.setting("apps", "compact") ? 34 : 44) + (root.setting("apps", "hints") !== false ? 6 : 0)
   // Metro: pinned apps as tiles above the list of other running apps
   readonly property bool tilesOn: root.setting("apps", "tiles") !== false
+  // running apps: a fixed height (0 = fit them all; it scrolls when they don't fit), set by
+  // dragging its bottom edge in edit mode; runMaxDrag is the live value while dragging
+  property int runMaxDrag: -1
+  readonly property int runMaxH: runMaxDrag >= 0 ? runMaxDrag : Math.max(0, Number(root.setting("running", "maxH") || 0))
   readonly property int bigTiles: Math.max(0, Number(root.setting("apps", "bigTiles") || 0))
   // plugin widgets pinned as live tiles: { "<plugin id>": "small" | "medium" | "wide" }
   readonly property var widgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
@@ -2627,6 +2632,8 @@ Item {
 
       // -- drag an app out of the sidebar ------------------------------------------
       property var dragItem: null
+      // a drag that started in the running list (a pinned app dropped back on it stays pinned)
+      property bool dragFromList: false
       property real dragX: 0          // pointer, in this screen's coordinates
       property real dragY: 0
       property var dragRects: []      // tiled windows on the active workspace
@@ -2656,8 +2663,9 @@ Item {
         if (x >= root.sidebarWidth || !appList.visible) return null
         var p = appList.mapFromItem(win.contentItem, x, y)
         if (p.y < -12 || p.y > appList.height + 12) return null
-        // Metro tiles: pins live in the tiles, so dropping on the running list unpins
-        if (root.tilesOn) return { index: 9999, y: p.y + appList.contentY, unpin: true }
+        // Metro tiles: pins live in the tiles, so a tile dropped on the running list unpins
+        // (a pinned app dragged around within the running list stays pinned)
+        if (root.tilesOn) return win.dragFromList && win.dragItem && win.dragItem.pinned ? null : { index: 9999, y: p.y + appList.contentY, unpin: true }
         var rows = appList.model || []
         var cy = p.y + appList.contentY
         var index = rows.length, lineY = appList.contentHeight
@@ -3621,7 +3629,7 @@ Item {
       // A built-in section with a trim goes into a clipping box whose content is
       // shifted up by the top trim and cut short by the bottom one. Untrimmed
       // sections stay as they are. (Widget sections trim themselves.)
-      function isTrimmable(id) { return id !== "apps" && String(id).indexOf("w:") !== 0 }
+      function isTrimmable(id) { return id !== "apps" && id !== "running" && String(id).indexOf("w:") !== 0 }
       readonly property var trimmedIds: root.sectionOrder.filter(function(id) {
         return win.isTrimmable(id) && (root.cropOf(id, "top") > 0 || root.cropOf(id, "bottom") > 0)
       })
@@ -3696,6 +3704,8 @@ Item {
         var items = []
         var pinned = {}   // id -> its parts, drawn in its holder above the column
         root.sectionOrder.forEach(function(id) {
+          // the spare height always sits just above the bottom row's place (pinned or not)
+          if (id === "bottom") items.push(bottomSpacer)
           if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1 && blocks[id]) {
             var pp = win.pinParts(id)
             items.push(pp.slot)
@@ -3905,7 +3915,7 @@ Item {
             }
             // trim handles: drag the top edge down or the bottom edge up to cut that much off
             Repeater {
-              model: ebox.picked && ebox.modelData.id !== "apps" && !ebox.dragged ? ["top", "bottom"] : []
+              model: ebox.picked && win.isTrimmable(ebox.modelData.id) && !ebox.dragged ? ["top", "bottom"] : []
               Rectangle {
                 id: trimHandle
                 required property string modelData
@@ -3950,6 +3960,35 @@ Item {
                   }
                   onCanceled: root.cropDrag = null
                 }
+              }
+            }
+            // running apps: drag the bottom edge to set the list's height (double-click: fit all)
+            Rectangle {
+              visible: ebox.modelData.id === "running" && ebox.picked && !ebox.dragged
+              z: 5
+              width: 56; height: 10
+              x: (parent.width - width) / 2
+              y: parent.height - height / 2
+              color: runResize.containsMouse || runResize.pressed ? root.accent : "#FFFFFF"
+              Rectangle { anchors.centerIn: parent; width: 24; height: 2; color: runResize.containsMouse || runResize.pressed ? "#FFFFFF" : "#000000" }
+              MouseArea {
+                id: runResize
+                anchors.fill: parent
+                anchors.margins: -5
+                hoverEnabled: true
+                preventStealing: true
+                cursorShape: Qt.SizeVerCursor
+                property real startY: 0
+                property real startH: 0
+                onPressed: function(mouse) { startY = mapToItem(editOverlay, mouse.x, mouse.y).y; startH = appList.height; root.runMaxDrag = Math.round(startH) }
+                onPositionChanged: function(mouse) {
+                  if (!pressed) return
+                  var dy = mapToItem(editOverlay, mouse.x, mouse.y).y - startY
+                  root.runMaxDrag = Math.max(root.rowH, Math.round((startH + dy) / 2) * 2)
+                }
+                onReleased: { var v = root.runMaxDrag; root.runMaxDrag = -1; if (v >= 0) root.setSetting("running", "maxH", v) }
+                onCanceled: root.runMaxDrag = -1
+                onDoubleClicked: { root.runMaxDrag = -1; root.setSetting("running", "maxH", 0) }
               }
             }
             // round ✕ to hide the section, on the lifted tile's corner (Windows Phone's unpin)
@@ -4481,6 +4520,8 @@ Item {
                   onPicked: function(v) { root.setWidgetTile(modelData.id, v) }
                 }
               }
+              OptRow { visible: root.editSection === "running"; label: "Show pinned apps that are open"; options: parent.parent.onOff; current: root.setting("running", "pinned") !== false; onPicked: function(v) { root.setSetting("running", "pinned", v) } }
+              StepRow { visible: root.editSection === "running"; label: root.runMaxH > 0 ? "Height" : "Height (fits all)"; value: root.runMaxH; step: 40; min: 0; max: 1200; suffix: " px"; onChanged: function(v) { root.setSetting("running", "maxH", v) } }
               OptRow { visible: root.editSection === "running"; label: "Show apps that aren't pinned"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
               OptRow { visible: root.editSection === "running"; label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { visible: root.editSection === "running"; label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
@@ -4490,7 +4531,7 @@ Item {
               OptRow { visible: root.editSection === "running"; label: "Status symbols in hints"; options: [[true, "show"], [false, "hide"]]; current: root.setting("apps", "hintSymbols"); onPicked: function(v) { root.setSetting("apps", "hintSymbols", v) } }
               OptRow { visible: root.editSection === "running"; label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
               OptRow { visible: root.editSection === "running"; label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: root.editSection === "apps" ? "Drag app tiles to reorder them; drag one onto the running list or right-click it to unpin." : "Drag a running app onto the tiles to pin it."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: root.editSection === "apps" ? "Drag app tiles to reorder them; drag one onto the running list or right-click it to unpin." : "Drag a running app onto the tiles to pin it. Drag the list's bottom edge (on the left) to set its height; double-click it to fit all."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // a widget section
             ColumnLayout {
@@ -5661,6 +5702,7 @@ Item {
                   var p = mapToItem(win.contentItem, mouse.x, mouse.y)
                   if (!dragging && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
                     dragging = true; dragged = true
+                    win.dragFromList = false
                     win.beginDrag(tile.modelData)
                   }
                   if (dragging) win.updateDrag(p.x, p.y)
@@ -5859,14 +5901,28 @@ Item {
           visible: !(root.searching && root.searchMonitor === win.monitorName) && root.sectionShown("running")
           opacity: root.sectionOpacity("running")
           Layout.fillWidth: true
-          Layout.fillHeight: true
-          Layout.preferredHeight: 0
-          // all of it: when the sidebar runs out of room it scrolls as a whole
-          Layout.minimumHeight: contentHeight
+          Layout.preferredHeight: root.runMaxH > 0 ? Math.min(contentHeight, root.runMaxH) : contentHeight
+          // all of it: when the sidebar runs out of room it scrolls as a whole;
+          // with a height set (edit mode, drag its bottom edge) the list scrolls by itself
+          Layout.minimumHeight: root.runMaxH > 0 ? Math.min(contentHeight, root.runMaxH) : contentHeight
+          Layout.maximumHeight: root.runMaxH > 0 ? root.runMaxH : Number.POSITIVE_INFINITY
           clip: true
           spacing: 2
+          interactive: false
           boundsBehavior: Flickable.StopAtBounds
-          model: root.tilesOn ? win.appRows.filter(function(r) { return !r.pinned && !r.separator }) : win.appRows
+          WheelHandler {
+            enabled: appList.contentHeight > appList.height + 1
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: function(e) {
+              var dy = e.pixelDelta.y !== 0 ? e.pixelDelta.y : e.angleDelta.y / 2
+              appList.contentY = Math.max(0, Math.min(appList.contentHeight - appList.height, appList.contentY - dy))
+            }
+          }
+          // running apps: those not pinned, plus pinned ones that are open (running › show pinned apps)
+          model: root.tilesOn ? win.appRows.filter(function(r) {
+                   if (r.separator) return false
+                   return !r.pinned || (root.setting("running", "pinned") !== false && (r.windows || []).length > 0)
+                 }) : win.appRows
 
           delegate: Item {
             id: row
@@ -6035,6 +6091,7 @@ Item {
                   var p = mapToItem(win.contentItem, mouse.x, mouse.y)
                   if (!dragging && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
                     dragging = true; dragged = true
+                    win.dragFromList = true
                     win.beginDrag(row.modelData)
                   }
                   if (dragging) win.updateDrag(p.x, p.y)
@@ -6143,6 +6200,9 @@ Item {
             }
           }
         }
+
+        // the spare height, above the bottom row (keeps it at the bottom whatever the order)
+        Item { id: bottomSpacer; Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: 0 }
 
         // -- a plugin's panel, docked in the sidebar (opens above the bottom row) --
         ColumnLayout {
