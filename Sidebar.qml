@@ -2448,7 +2448,9 @@ Item {
         visible: root.panelStyled && win.panelInset > 0 && root.wallPath !== "" && !win.edgeHidden
         z: -11
         x: 0; y: 0
-        width: win.panelInset
+        // over a fullscreen app the whole strip gets the wallpaper (the gaps above
+        // and below the panel and its rounded corners), not just the left gap
+        width: win.fsHere ? win.width : win.panelInset
         height: win.height
         clip: true
         Image {
