@@ -17,8 +17,9 @@ Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 | System | CPU / memory / disk / GPU as live tiles (a tile turns accent above 85%); network in big light numerals with an accent graph |
 | Workspaces | Plain light numerals, the current one bright |
 | Search | A Windows Phone text box: light grey at rest, white with an accent edge while typing |
-| Pinned apps | Tiles in the accent colour, the first ones medium (2×2), the rest small; the app on screen has a white edge, unread counts sit top right |
-| Running apps | Rows with the icon on a square tile, names in lowercase light type, an accent bar on the one on screen |
+| Tiles | Tiles in the accent colour, the first ones medium (2×2), the rest small; the app on screen has a white edge, unread counts sit top right |
+| Plugin widgets | Any plugin widget can be pinned as a live tile (small, medium or wide) in Edit sidebar › tiles › widget tiles; clicking it opens its panel in the column, and it leaves the bottom row while it is a tile |
+| Running (its own section) | Rows with the icon on a square tile, names in lowercase light type, an accent bar on the one on screen |
 | Super+Space | The Omarchy menu in big lowercase type, windows dimmed behind; `›` drills in, the round `‹` comes back |
 | Quick settings | Takes over the whole column (heading with the date), then toggle tiles (wi-fi, bluetooth, quiet, night light, stay awake, power profile, capture, lock), then Metro rows, square toggle switches and block sliders |
 | Bottom row | One round **settings** button on the left (quick settings); your plugins' icons on the right |

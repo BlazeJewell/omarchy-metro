@@ -2011,12 +2011,23 @@ Item {
   // Metro: pinned apps as tiles above the list of other running apps
   readonly property bool tilesOn: root.setting("apps", "tiles") !== false
   readonly property int bigTiles: Math.max(0, Number(root.setting("apps", "bigTiles") || 0))
+  // plugin widgets pinned as live tiles: { "<plugin id>": "small" | "medium" | "wide" }
+  readonly property var widgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
+  readonly property var widgetTiles: root.allPluginEntries.filter(function(e) { var z = root.widgetTileMap[e.id]; return z === "small" || z === "medium" || z === "wide" })
+                                       .map(function(e) { return { id: String(e.id), size: root.widgetTileMap[e.id], entry: e } })
+  function setWidgetTile(id, size) {
+    var m = Object.assign({}, root.widgetTileMap)
+    if (size === "off") delete m[id]; else m[id] = size
+    root.setSetting("apps", "widgetTiles", m)
+  }
   // Order of the sections down the sidebar (dragged in edit mode).
-  readonly property var defaultOrder: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "apps", "tray", "bottom"]
+  readonly property var defaultOrder: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "apps", "running", "tray", "bottom"]
   readonly property var sectionOrder: {
     var saved = Array.isArray(root.userSettings.order) ? root.userSettings.order : []
     var known = root.defaultOrder.concat(root.extraSections.map(function(e) { return e.id }))
     var out = saved.filter(function(id, i) { return known.indexOf(id) !== -1 && saved.indexOf(id) === i })
+    // Metro split the app list in two: "running" starts right after the tiles ("apps")
+    if (out.indexOf("running") === -1 && out.indexOf("apps") !== -1) out.splice(out.indexOf("apps") + 1, 0, "running")
     // a section the saved order doesn't know yet (new in this version) goes
     // just before the one it comes before by default (else just after the one
     // it follows), not at the very end
@@ -2041,7 +2052,7 @@ Item {
   readonly property var editSections: [
     { id: "clock", label: "CLOCK" }, { id: "status", label: "STATUS" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
-    { id: "apps", label: "APP LIST" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
+    { id: "apps", label: "TILES" }, { id: "running", label: "RUNNING" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
     root.closeOverview()     // it covers the window area, where the editor opens
@@ -2641,7 +2652,7 @@ Item {
         if (!root.tilesOn || x >= root.sidebarWidth || !pinTiles.visible) return null
         var p = pinTiles.mapFromItem(win.contentItem, x, y)
         if (p.x < -6 || p.y < -10 || p.x > pinTiles.width + 6 || p.y > pinTiles.height + 10) return null
-        var rects = pinTiles.rects, n = rects.length
+        var rects = pinTiles.rects, n = pinTiles.appCount
         for (var i = 0; i < n; i++) {
           var r = rects[i]
           if (p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h)
@@ -3626,7 +3637,7 @@ Item {
       function sectionBlocks() {
         var blocks = {
           clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
-          apps: [menuList, pinTiles, runHeader, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
+          apps: [menuList, pinTiles], running: [runHeader, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
         return blocks
@@ -3800,7 +3811,7 @@ Item {
           var out = {
             clock: boxFor(boxItems("clock", [secClock])), status: boxFor(boxItems("status", [secStatus])), system: boxFor(boxItems("system", [secStats, secNet])),
             workspaces: boxFor(boxItems("workspaces", [secWs])), search: boxFor(boxItems("search", [secSearch])), media: boxFor(boxItems("media", [secMedia])),
-            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([pinTiles, runHeader, appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
+            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([pinTiles]), running: boxFor([runHeader, appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
           }
           for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
           return out
@@ -4412,12 +4423,25 @@ Item {
             }
             // APP LIST
             ColumnLayout {
-              visible: root.editTab === "section" && !root.addOpen && root.editSection === "apps"
+              visible: root.editTab === "section" && !root.addOpen && (root.editSection === "apps" || root.editSection === "running")
               Layout.fillWidth: true
               spacing: 6
               EdHeading { text: "APP LIST"; visible: false }
               OptRow { label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
               StepRow { visible: root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
+              EdHeading { visible: root.tilesOn && root.allPluginEntries.length > 0; text: "widget tiles" }
+              Text { visible: root.tilesOn && root.allPluginEntries.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "Pin a plugin's widget as a live tile; it leaves the bottom row while it's a tile."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
+              Repeater {
+                model: root.tilesOn ? root.allPluginEntries : []
+                OptRow {
+                  required property var modelData
+                  label: root.widgetName(modelData.id)
+                  options: [["off", "off"], ["small", "small"], ["medium", "medium"], ["wide", "wide"]]
+                  current: root.widgetTileMap[modelData.id] || "off"
+                  onPicked: function(v) { root.setWidgetTile(modelData.id, v) }
+                }
+              }
               OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
               OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
@@ -5494,20 +5518,30 @@ Item {
         Item {
           id: pinTiles
           readonly property var items: root.tilesOn ? win.appRows.filter(function(r) { return r.pinned }) : []
-          visible: root.tilesOn && !(root.searching && root.searchMonitor === win.monitorName) && items.length > 0
+          readonly property int appCount: items.length
+          readonly property var wtiles: root.tilesOn ? root.widgetTiles : []
+          visible: root.tilesOn && root.sectionShown("apps") && !(root.searching && root.searchMonitor === win.monitorName) && (items.length + wtiles.length) > 0
+          opacity: root.sectionOpacity("apps")
           Layout.fillWidth: true
           Layout.preferredHeight: rects.length > 0 ? rects.reduce(function(m, r) { return Math.max(m, r.y + r.h) }, 0) : 0
           readonly property real gap: 6
           readonly property real unit: (width - gap * 3) / 4
           // pack: medium (2x2) tiles first, then small (1x1) ones, left to right in a 4-column grid
+          // each tile's size in grid cells: pinned apps (the first few medium), then widget tiles
+          readonly property var cellSizes: {
+            var out = []
+            for (var k = 0; k < items.length; k++) out.push(k < root.bigTiles ? [2, 2] : [1, 1])
+            wtiles.forEach(function(w) { out.push(w.size === "wide" ? [4, 2] : w.size === "medium" ? [2, 2] : [1, 1]) })
+            return out
+          }
           readonly property var rects: {
-            var n = items.length, out = [], used = {}, u = unit, g = gap
+            var n = cellSizes.length, out = [], used = {}, u = unit, g = gap
             function free(c, r, w, h) { if (c + w > 4) return false; for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) if (used[(r + j) + ":" + (c + i)]) return false; return true }
             function take(c, r, w, h) { for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) used[(r + j) + ":" + (c + i)] = true }
             for (var k = 0; k < n; k++) {
-              var sz = k < root.bigTiles ? 2 : 1, placed = false
+              var cw = cellSizes[k][0], ch = cellSizes[k][1], placed = false
               for (var r = 0; !placed && r < 64; r++) for (var c = 0; !placed && c < 4; c++) {
-                if (free(c, r, sz, sz)) { take(c, r, sz, sz); out.push({ x: c * (u + g), y: r * (u + g), w: sz * u + (sz - 1) * g, h: sz * u + (sz - 1) * g, big: sz > 1 }); placed = true }
+                if (free(c, r, cw, ch)) { take(c, r, cw, ch); out.push({ x: c * (u + g), y: r * (u + g), w: cw * u + (cw - 1) * g, h: ch * u + (ch - 1) * g, big: cw > 1 || ch > 1 }); placed = true }
               }
             }
             return out
@@ -5603,6 +5637,80 @@ Item {
               }
             }
           }
+          // plugin widgets pinned as live tiles: the widget itself, scaled up on an accent tile;
+          // a click on the tile opens its panel (docked in the column, like the bottom row's)
+          Repeater {
+            model: pinTiles.wtiles
+            Rectangle {
+              id: wtile
+              required property var modelData
+              required property int index
+              readonly property var r: pinTiles.rects[pinTiles.appCount + index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              x: r.x; y: r.y; width: r.w; height: r.h
+              color: root.accent
+              clip: true
+              scale: wtMouse.pressed ? 0.96 : 1
+              Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
+              MouseArea {
+                id: wtMouse
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function(mouse) {
+                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName); root.editSection = "apps"; return }
+                  root.summonBarWidget(wtile.modelData.id)
+                }
+              }
+              Loader {
+                id: wHost
+                anchors.centerIn: parent
+                anchors.verticalCenterOffset: wtile.r.big ? -10 : -6
+                readonly property string moduleName: wtile.modelData.id
+                readonly property var modelData: wtile.modelData.entry
+                readonly property var registryEntry: {
+                  var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : null
+                  return w ? w[moduleName] || null : null
+                }
+                active: !!registryEntry && !!registryEntry.component
+                sourceComponent: registryEntry ? registryEntry.component : null
+                readonly property bool shown: !!item && (item.implicitWidth || 0) > 0
+                width: shown ? item.implicitWidth : 0
+                height: shown ? Math.max(16, item.implicitHeight || 28) : 0
+                // as big as the tile allows (a bar widget is drawn for a ~28 px bar)
+                scale: shown ? Math.max(1, Math.min(wtile.r.big ? 3 : 1.6, (wtile.width - 16) / Math.max(1, width), (wtile.height - 34) / Math.max(1, height))) : 1
+                function inject() {
+                  if (!item) return
+                  if ("fixedEdge" in item) item.fixedEdge = "start"
+                  if ("bar" in item) item.bar = widgetBar
+                  if ("moduleName" in item) item.moduleName = wHost.moduleName
+                  if ("settings" in item) {
+                    var meta = registryEntry && registryEntry.metadata ? registryEntry.metadata : {}
+                    var defs = meta.barWidget && meta.barWidget.defaults ? meta.barWidget.defaults : (meta.defaults || {})
+                    var merged = JSON.parse(JSON.stringify(defs))
+                    for (var k in wHost.modelData) if (k !== "id") merged[k] = wHost.modelData[k]
+                    item.settings = merged
+                  }
+                }
+                onLoaded: {
+                  inject()
+                  Qt.callLater(inject)
+                  root.hostedItems = root.hostedItems.concat([wHost])
+                  wReinject.restart()
+                }
+                Timer { id: wReinject; interval: 2000; onTriggered: wHost.inject() }
+                Component.onDestruction: root.hostedItems = root.hostedItems.filter(function(h) { return h !== wHost })
+              }
+              Text {
+                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                width: parent.width - 16
+                textFormat: Text.PlainText
+                text: root.widgetName(wtile.modelData.id).toLowerCase()
+                color: "#FFFFFF"
+                font.family: root.metroFont; font.pixelSize: wtile.r.big ? 14 : 11
+                elide: Text.ElideRight
+              }
+            }
+          }
         }
         Text {
           id: runHeader
@@ -5628,7 +5736,8 @@ Item {
             y: win.listDrop ? win.listDrop.y - appList.contentY : 0
             color: root.urgent
           }
-          visible: !(root.searching && root.searchMonitor === win.monitorName)
+          visible: !(root.searching && root.searchMonitor === win.monitorName) && root.sectionShown("running")
+          opacity: root.sectionOpacity("running")
           Layout.fillWidth: true
           Layout.fillHeight: true
           Layout.preferredHeight: 0
@@ -6365,7 +6474,7 @@ Item {
             Row {
               spacing: 4
               Repeater {
-                model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) })
+                model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) && !root.widgetTileMap[e.id] })
                 Item {
                   id: pcell
                   required property var modelData
