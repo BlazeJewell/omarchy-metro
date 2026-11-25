@@ -5,7 +5,7 @@
 #                                fullscreen windows
 #   fsmem.sh restore address...  re-fullscreen any of these that were remembered
 set -u
-mem="${XDG_RUNTIME_DIR:-/tmp}/jake-sidebar-fullscreen"
+mem="${XDG_RUNTIME_DIR:-/tmp}/jake-metro-fullscreen"
 touch "$mem"
 . "$(dirname "$0")/hbatch.sh"
 q=()

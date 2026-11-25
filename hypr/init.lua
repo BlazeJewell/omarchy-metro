@@ -1,9 +1,9 @@
--- jake.sidebar: the Hyprland side of the sidebar rice.
+-- jake.metro: the Hyprland side of the sidebar rice.
 -- Loaded from ~/.config/hypr/hyprland.lua (after Omarchy's defaults and your own
 -- files) by one line that hypr-link.sh adds; the sidebar runs that whenever it
 -- starts, so `omarchy plugin add` is all it takes.
 local home = os.getenv("HOME") or ""
-local dir = home .. "/.config/omarchy/plugins/jake.sidebar/hypr/"
+local dir = home .. "/.config/omarchy/plugins/jake.metro/hypr/"
 
 -- Only while the sidebar is the bar in use (Omarchy keeps that in shell.json as
 -- bar.id): disabled, Super+Space and the rest stay Omarchy's own.
@@ -12,7 +12,7 @@ local function sidebar_active()
   if not f then return false end
   local text = f:read("*a") or ""
   f:close()
-  return text:find('"id"%s*:%s*"jake%.sidebar"') ~= nil
+  return text:find('"id"%s*:%s*"jake%.metro"') ~= nil
 end
 if not sidebar_active() then return end
 

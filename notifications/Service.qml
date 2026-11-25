@@ -51,6 +51,30 @@ Item {
   // ------------------------------------------------------------- quiet
   //
   property bool doNotDisturb: false
+  // jake.metro: the Metro accent (Edit sidebar › Accent), for the stripe on each card,
+  // drawn only while jake.metro is the bar in use (the classic sidebar shares this plugin)
+  property color metroAccent: "#0050EF"
+  property bool metroActive: false
+  FileView {
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: { try { var v = JSON.parse(text()); service.metroActive = !!(v && v.bar && v.bar.id === "jake.metro") } catch (e) {} }
+  }
+  FileView {
+    path: Quickshell.env("HOME") + "/.config/omarchy/metro-settings.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      try {
+        var v = JSON.parse(text())
+        var a = v && v.general ? String(v.general.accent || "") : ""
+        if (/^#[0-9a-fA-F]{6}$/.test(a)) service.metroAccent = a
+      } catch (e) {}
+    }
+  }
   function setDoNotDisturb(value) {
     var on = !!value
     if (on === doNotDisturb) return
@@ -74,7 +98,7 @@ Item {
   function marginsFor(screenName) {
     return Delivery.deckMargins(barPosition, Delivery.barThickness(barRef, screenName, defaultBarSize), Style.gapsOut)
   }
-  // jake.sidebar: notifications appear inside the sidebar, at its top, as wide
+  // jake.metro: notifications appear inside the sidebar, at its top, as wide
   // as the panel less a small inset on each side.
   readonly property int panelInset: 10
   readonly property int panelWidth: Math.round(Number(barRef && barRef.barSize) || 0)
@@ -449,7 +473,7 @@ Item {
   readonly property int leaveDuration: 200
   property int sceneDuration: arriveDuration
   // How far a card drops in from, and rises by on its way out.
-  // jake.sidebar: cards slide sideways from the sidebar (Toast.qml), not down.
+  // jake.metro: cards slide sideways from the sidebar (Toast.qml), not down.
   readonly property real travel: 0
 
   property real t: 1                 // 0..1, eased, shared by every card
@@ -1526,7 +1550,7 @@ Item {
       exclusionMode: ExclusionMode.Ignore
 
       // Constant width and full height, so the buffer is allocated once.
-      // jake.sidebar: over the top of the sidebar, on the left edge.
+      // jake.metro: over the top of the sidebar, on the left edge.
       anchors { top: true; bottom: true; left: true }
       implicitWidth: clipper.width + Style.space(10)
 

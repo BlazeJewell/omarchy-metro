@@ -211,7 +211,7 @@ Item {
   scale: scene ? scene.at(row.key, "scale") : 1
   opacity: place.hidden ? 0 : (scene ? scene.at(row.key, "opacity") : 1)
   transformOrigin: Item.TopLeft
-  // jake.sidebar: arrive from, and leave into, the sidebar on the left.
+  // jake.metro: arrive from, and leave into, the sidebar on the left.
   property real slide: 1
   transform: Translate { x: -card.slide * (card.width + 12) }
   NumberAnimation on slide { id: slideIn; running: false; to: 0; duration: Style.duration(260); easing.type: Easing.OutCubic }
@@ -231,8 +231,8 @@ Item {
     id: plate
     width: body.width
     height: body.height
-    radius: Style.cornerRadius
-    // jake.sidebar: drawn like a section of the panel it sits in.
+    radius: 0
+    // jake.metro: drawn like a section of the panel it sits in.
     color: Commons.Color.bar.background
     borderSpec: Border.none()
   }
@@ -242,6 +242,13 @@ Item {
     color: "transparent"
     border.width: 1
     border.color: Qt.rgba(Commons.Color.bar.text.r, Commons.Color.bar.text.g, Commons.Color.bar.text.b, 0.16)
+  }
+  // jake.metro: an accent stripe down the card's left edge
+  Rectangle {
+    visible: !!card.scene && card.scene.metroActive === true
+    width: 4
+    height: plate.height
+    color: card.scene && card.scene.metroAccent ? card.scene.metroAccent : "#0050EF"
   }
 
   // The keyboard's card is tinted with the theme's hover fill, buttons and all.

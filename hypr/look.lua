@@ -16,10 +16,10 @@ hl.animation({ leaf = "windowsIn", enabled = true, speed = 4.1, bezier = "easeOu
 hl.animation({ leaf = "windowsOut", enabled = true, speed = 2.5, bezier = "easeInOutCubic", style = "slide left" })
 
 -- Window corners and borders: set in the sidebar's editor (Whole sidebar ›
--- Windows), saved in ~/.config/omarchy/sidebar-settings.json; rounded corners
+-- Windows), saved in ~/.config/omarchy/metro-settings.json; rounded corners
 -- and no borders unless changed there. (The sidebar also applies them live.)
 local settings_text = (function()
-  local f = io.open((os.getenv("HOME") or "") .. "/.config/omarchy/sidebar-settings.json", "r")
+  local f = io.open((os.getenv("HOME") or "") .. "/.config/omarchy/metro-settings.json", "r")
   if not f then return "" end
   local t = f:read("*a") or ""
   f:close()
@@ -35,7 +35,7 @@ end
 -- What Omarchy and your own files set (this loads after them), so the sidebar
 -- can hand windows back to it when the look is for the sidebar only.
 do
-  local f = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-sidebar-window-base", "w")
+  local f = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-metro-window-base", "w")
   if f then
     f:write(tostring(hl.get_config("general.border_size") or 0) .. " " .. tostring(hl.get_config("decoration.rounding") or 0) .. "\n")
     f:close()
@@ -46,7 +46,7 @@ end
 if sidebar_string("lookScope", "windows") ~= "sidebar" then
   hl.config({
     general = { border_size = sidebar_number("windowBorder", 0) },
-    decoration = { rounding = sidebar_number("windowRounding", 10) },
+    decoration = { rounding = sidebar_number("windowRounding", 0) },
   })
 end
 

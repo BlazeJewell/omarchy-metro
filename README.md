@@ -1,214 +1,84 @@
-# jake.sidebar — everything in one left panel
+# jake.metro — the sidebar, in Metro
 
-![The sidebar on a single monitor](docs/mock-single.png)
-
-A rice for [Omarchy](https://omarchy.org) that replaces the top bar with one vertical panel on
-the left. The clock, system stats, workspaces, the Super+Space menu, your apps, settings,
-notifications and widgets all live in it, and the rest of the screen belongs to one app at a time.
+A Metro (Windows Phone / Windows 8) take on [jake.sidebar](https://github.com/BlazeJewell/omarchy-sidebar):
+the same single left column that replaces Omarchy's top bar, drawn with live tiles, big
+light type and one accent colour. It is a fork of jake.sidebar, so everything that makes
+the classic sidebar work comes with it unchanged: one app at a time, minimize and restore,
+fullscreen memory and games, the overview, Omarchy's panels docked in the column,
+notifications inside it, editing and profiles.
 
 Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 
-## Design philosophy
+## What's Metro about it
 
-### Everything in one place
-
-A desktop usually spreads its controls around the screen: a bar on top, a launcher in the
-middle, a dock at the bottom, popups in the corners. Here they share **one column on the
-left**. Your eyes and your pointer always go the same way to find something, and nothing opens
-in the middle of your work.
-
-- **The Super+Space menu types into the panel.** The full Omarchy menu, app search and the
-  clipboard all open there instead of in a centred popup.
-- **Quick settings slide over the panel itself**: network, sound, display, power and updates.
-- **Notifications appear inside the panel**, at the top, sliding in from the edge over
-  what's there and away again when they're done.
-- **Any Omarchy panel can be a section**, such as media, notifications or AI agents, and its
-  keyboard shortcut opens it in place.
-
-Why the left? Screens are wide, so a column costs less than a bar costs in height. A column
-reads like a list, top to bottom, and the panel ends where the app's own content begins, which
-is also where you start reading.
-
-### One app at a time
-
-Clicking an app shows **that app, full size**. The one before it slides out to the left.
-Windows of the same app tile side by side. Every motion starts from the panel: apps slide in
-from the left, minimized apps slide back into it, and the panel itself slides away for
-fullscreen games. Tap Super for an overview of everything that's open.
-
-### Ease of use
-
-- **One click, one result.** Click an app to show it. Click it again to hide it.
-- **The panel is the launcher.** Pinned apps sit on top, running apps underneath, and search
-  is always in the same spot.
-- **Familiar keys.** Super+Space for the menu, Super for the overview, Super+Alt+1…9 for
-  pinned apps. Omarchy's own panel shortcuts (Super+Ctrl+A/B/D/N/P…) open inside the panel.
-- **Arranged in place.** *Edit sidebar* outlines each section on the panel itself, so you can
-  reorder, resize, hide and add sections where you see them.
-
-### Simplicity
-
-One panel, one app and one direction of motion. Sections you don't use can be hidden, and the
-panel can auto-hide to a 4 px edge. Underneath it's Omarchy, not a fork: the menu,
-notifications, Do not disturb, update checks and panels all come from Omarchy's own
-services, so updates keep working.
-
-### Readability
-
-![Anatomy of the panel](docs/mock-anatomy.png)
-
-- **Top to bottom, the panel follows one order**: time, then system, workspace, search,
-  apps, what's playing, and settings.
-- **Words over icons.** Apps and settings are listed by name, and icons only support the label.
-- **Two levels of contrast.** What matters, such as the time, values and the current app, is
-  bright. Labels and units are dim, so numbers stand out without colour.
-- **Monospaced and aligned.** Your theme's font, with figures that don't jump around as they
-  change.
-- **Calm by default.** Nothing moves unless you act. The current app has one highlight.
-
-## See it work
-
-| | |
+| Part | Metro look |
 | --- | --- |
-| **Super+Space: the menu, in the panel** ![Menu demo](docs/demo-menu.gif) | **Quick settings slide over the panel** ![Quick settings demo](docs/demo-quick-settings.gif) |
+| Clock | Big Selawik Light time, the day and date in lowercase beside it |
+| System | CPU / memory / disk / GPU as live tiles (a tile turns accent above 85%); network in big light numerals with an accent graph |
+| Workspaces | Plain light numerals, the current one bright |
+| Search | A Windows Phone text box: light grey at rest, white with an accent edge while typing |
+| Pinned apps | Tiles in the accent colour, the first ones medium (2×2), the rest small; the app on screen has a white edge, unread counts sit top right |
+| Running apps | Rows with the icon on a square tile, names in lowercase light type, an accent bar on the one on screen |
+| Super+Space | The Omarchy menu in big lowercase type, windows dimmed behind; `›` drills in, the round `‹` comes back |
+| Quick settings | Toggle tiles (wi-fi, bluetooth, quiet, night light, stay awake, power profile, capture, lock), then Metro rows, square toggle switches and block sliders |
+| App bar | Round outlined buttons along the bottom: **settings** first, then network, sound, bluetooth and power when the column is wide enough |
+| Overview (Super) | A panorama: a giant "overview" title, one column per workspace with its caption, the next one peeking in at the edge; ← → move between workspaces |
+| Notifications | Square cards with an accent stripe, inside the top of the column |
+| Corners | Square everywhere, windows included (Edit sidebar › Corners to change) |
 
-**One app at a time: each new app slides in from the left and the last one slides out; minimizing slides an app away behind the panel**
+Type is [Selawik](https://github.com/microsoft/Selawik), Microsoft's open stand-in for Segoe,
+bundled in `fonts/` under the SIL Open Font License (`fonts/LICENSE-Selawik.txt`). Icon
+glyphs still come from your theme's Nerd Font.
 
-![One app at a time and minimize demo](docs/demo-one-app.gif)
+## Settings
 
-**Notifications appear inside the panel, at the top**
+All in **Edit sidebar** (quick settings › edit sidebar), saved in
+`~/.config/omarchy/metro-settings.json`, separate from the classic sidebar's files:
 
-![Notifications demo](docs/demo-notifications.gif)
+- **Width**: 200–560 px (default 360), or drag the column's right edge
+- **Accent**: Windows Phone 8's twenty; cobalt blue (`#0050EF`) by default
+- **Panel colour**: black (default) or your Omarchy theme's bar colour
+- **App list › Pinned apps as tiles** and **› Medium tiles** (how many of the first pins are 2×2)
+- Everything the classic sidebar has: sections and their order, auto-hide, profiles, …
 
-## Every screen size
+## Switching between Metro and classic
 
-The layout is one column plus one app, so it scales down without changing shape. Only the
-column's width and whether it stays docked change.
+Both can be installed at once; only the bar in use loads its Hyprland side.
 
-![The layout from desktop to phone width](docs/responsive.gif)
+```bash
+omarchy bar use jake.metro      # Metro
+omarchy bar use jake.sidebar    # classic
+```
 
-### Single monitor
-
-The panel is docked on the left and the app fills the rest (see the picture at the top). Drag
-the panel's right edge to resize it. The scale is remembered per resolution, so a 4K and a
-1080p screen each keep their own size.
-
-### Multiple monitors
-
-![Two monitors, each with its own panel](docs/mock-multi.png)
-
-Every monitor gets its own panel, with its own clock, workspaces and apps. The menu, quick
-settings and overview open on the monitor you're using, so you never have to look across to
-another screen. Fullscreen apps and games cover their monitor's panel until you tap Super.
-
-### Tablet-size screens
-
-![Tablet: docked in landscape, tucked in portrait](docs/mock-tablet.png)
-
-In landscape, a narrower panel stays docked. In portrait, turn on auto-hide
-(*Edit sidebar › Whole sidebar*): the panel tucks into a 4 px edge and slides over the app when you
-reach for it, so the app keeps the full width.
-
-### Phone-size screens (concept)
-
-![Phone: the app, the panel as home screen, quick settings](docs/mock-phone.png)
-
-Showing one app at a time is already how phones work. At phone width the panel becomes the
-home screen: the app runs full screen, and pulling the panel out from the edge gives the
-launcher, workspaces and quick settings at full width. Omarchy is a desktop, so this is a
-concept. Panel width, auto-hide and choosing sections exist today; touch gestures don't.
-
-The mockups are drawn from [`docs/mockups.html`](docs/mockups.html), which you can open in a
-browser.
+Notifications are one shared plugin (`jake.notifications`), linked to this copy while
+Metro is installed; the accent stripe only shows while Metro is the bar.
 
 ## Install
 
-The repo is private, so clone it with your GitHub login (`gh auth login` once per machine):
+From this folder:
 
 ```bash
-gh repo clone BlazeJewell/omarchy-sidebar ~/.config/omarchy/plugins/jake.sidebar
-~/.config/omarchy/plugins/jake.sidebar/install.sh
+./install.sh
 ```
 
-(`git clone https://github.com/BlazeJewell/omarchy-sidebar.git ~/.config/omarchy/plugins/jake.sidebar` works too.)
+It loads `hypr/` with one line in `~/.config/hypr/hyprland.lua` (its own line, beside the
+classic sidebar's), switches the bar to `jake.metro`, turns off Omarchy's dock and links
+notifications. Undo with `./uninstall.sh`, which goes back to the classic sidebar if it is
+installed (`--purge` also deletes this folder and the `metro-*.json` files).
 
-The installer:
+## Notes for editing
 
-- puts the plugin in `~/.config/omarchy/plugins/jake.sidebar`
-- loads `hypr/` (Super+Space and other bindings, one app at a time, animations)
-  with one line in `~/.config/hypr/hyprland.lua` (`hypr-link.sh`)
-- switches the bar to the sidebar (`omarchy bar use jake.sidebar`) and turns off
-  Omarchy's dock
-
-Undo with `./uninstall.sh` (add `--purge` to delete the plugin and layout too).
-
-Installing with `omarchy plugin add https://github.com/BlazeJewell/omarchy-sidebar`
-works too: the first time the sidebar starts it sets itself up (`setup.sh`). It hooks
-up its Hyprland side (`hypr-link.sh`, which reloads Hyprland once), turns off
-Omarchy's dock, and docks notifications top-left. The dock and notification part
-happens once per install, so turning the dock back on later sticks; removing and
-re-adding the plugin sets it up again. The Hyprland line skips itself if the plugin
-folder is removed, and `hypr/` only loads while the sidebar is the bar in use, so
-disabling it gives Super+Space and the rest back to Omarchy.
-
-Either way the sidebar starts with its default layout: the standard sections, and
-the apps pinned in your Omarchy dock (Omarchy's defaults if you never changed
-them) until you pin or unpin something in the sidebar. Your layout is your own;
-installing never copies one in. To carry yours between machines, see below.
-
-## Keeping machines in sync
-
-```bash
-cd ~/.config/omarchy/plugins/jake.sidebar
-./sync.sh save     # this machine's layout -> layout/, commit, push
-./sync.sh load     # pull, apply layout/ here
-./sync.sh update   # pull plugin / Hyprland changes, keep this machine's layout
-```
-
-Or use the **Update** button at the bottom of quick settings: it checks GitHub when
-quick settings opens, shows how many updates are waiting, and runs `sync.sh update`.
-
-The layout is the `sidebar-*.json` files: sections and their order, pinned apps,
-hidden icons, profiles. Display scale and refresh rate stay per machine.
+- Saving `Sidebar.qml` reloads the bar live.
+- `notifications/` is reached through the `jake.notifications` link, so the shell does not
+  see edits there; run `omarchy restart shell` after changing it.
 
 ## What's where
 
 | Path | What |
 | --- | --- |
-| `Sidebar.qml` | the sidebar (Quickshell, loaded by omarchy-shell as a `bar` plugin) |
-| `hypr/` | Hyprland side (loaded by `hypr-link.sh`): `binds.lua`, `look.lua` (animations, borders, corners, grouping), `solo.lua` (one app at a time), `rules.lua` |
-| `*.sh` | helpers the sidebar runs: `minimize.sh` / `restore.sh` (slide out / back in; layout-aware), `solo.sh` (one app at a time), `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh` (drag to place), `hbatch.sh` (sends batched commands to Hyprland without moving the pointer), `refresh.sh` (resolution & refresh rate), `gpu.sh` (finds the GPU), `update.sh` (the quick-settings Update button) |
-| `notifications/` | a copy of Omarchy's notification service, changed so notifications appear inside the top of the sidebar, drawn like a panel section (installed as the `jake.notifications` plugin) |
-| `layout/` | the saved sidebar layout synced between machines |
-| `MenuModel.js` | copy of Omarchy's own menu model (`/usr/share/omarchy/shell/plugins/menu/MenuModel.js`); plugins may not contain symlinks, so re-copy it if Omarchy changes it |
-
-## Works with stock Omarchy
-
-- Panel shortcuts open inside the sidebar: Super+Ctrl+A/B/D/N/P, Super+Ctrl+1…9
-  (counted like the stock bar), Super+Ctrl+Alt+D (calendar), Super+Ctrl+Alt+E
-  (world clock) and any other `{ panel = ... }` bind.
-- `omarchy toggle bar` and the fullscreen-desktop toggle tuck the sidebar away.
-- Minimized windows use Omarchy's `special:minimized` workspace and
-  `omarchy-minimized-from-N` tag, and Omarchy's floating workspace layout is
-  respected (windows stay floating and keep their size).
-- Notifications keep all of Omarchy's features (stacks, actions, history, Do not
-  disturb); only their place and motion change. If an Omarchy update changes
-  notifications, re-clone with `omarchy plugin clone omarchy.notifications` and
-  re-apply the few `jake.sidebar:` lines.
-- Do not disturb, indicators, update available and keyboard layout come from
-  Omarchy's own services and widgets.
-
-## Keys
-
-| Keys | Does |
-| --- | --- |
-| Super (tap) | overview of open windows |
-| Super+Space | the menu, inside the sidebar |
-| Super+Alt+1…9 | pinned apps |
-| Super+M | minimize (slides out left) |
-| Super+Ctrl+A / B / D / N / P | sound / bluetooth / display / network / power settings |
-
-Widget sections that use other plugins (for example AI Usage) need that plugin
-installed on the machine too; otherwise the section says it has no panel.
-
-After editing `Sidebar.qml`, run `omarchy restart shell` — the shell caches bar plugins.
+| `Sidebar.qml` | the sidebar (loaded by omarchy-shell as a `bar` plugin) |
+| `fonts/` | Selawik Light, Semilight, Regular, Semibold + licence |
+| `hypr/` | Hyprland side: `binds.lua` (Super+Space, Super for the overview, …), `look.lua`, `solo.lua` (one app at a time), `rules.lua` |
+| `*.sh` | helpers: `minimize.sh` / `restore.sh`, `solo.sh`, `fsmem.sh` (fullscreen memory), `drop.sh` / `pair.sh`, `hbatch.sh`, `refresh.sh`, `gpu.sh`, `update.sh`, `sync.sh` |
+| `notifications/` | Omarchy's notification service, docked inside the column (the `jake.notifications` plugin) |
+| `MenuModel.js` | copy of Omarchy's menu model |

@@ -1,4 +1,4 @@
--- One app at a time, for the jake.sidebar plugin.
+-- One app at a time, for the jake.metro plugin.
 --
 -- A tiled window that opens takes its workspace to itself: the other tiled
 -- windows there slide out to the left and are minimized (to special:minimized,
@@ -11,9 +11,9 @@
 --   * a window whose app already has one showing there (Steam's chat or news
 --     next to Steam, a second Firefox window): it tiles with it
 --   * the next window after Shift+click or drag-and-drop in the sidebar, which
---     leaves a short-lived note in $XDG_RUNTIME_DIR/jake-sidebar-tile-next
+--     leaves a short-lived note in $XDG_RUNTIME_DIR/jake-metro-tile-next
 
-local tile_next_file = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-sidebar-tile-next"
+local tile_next_file = (os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-metro-tile-next"
 
 local function take_tile_next()
   local f = io.open(tile_next_file, "r")
@@ -60,7 +60,7 @@ hl.on("window.open", function(window)
   if last_unfullscreen and os.time() - last_unfullscreen.at <= 1 then
     for _, other in ipairs(others) do
       if other.address == last_unfullscreen.address then
-        local mem = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-sidebar-fullscreen", "a")
+        local mem = io.open((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/jake-metro-fullscreen", "a")
         if mem then mem:write(other.address .. " " .. last_unfullscreen.mode .. "\n"); mem:close() end
       end
     end
@@ -127,6 +127,6 @@ hl.on("window.open", function(window)
   end
   -- couldn't read a window's geometry here: let minimize.sh do it
   if #fallback > 0 then
-    hl.exec_cmd("bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.sidebar/minimize.sh " .. table.concat(fallback, " "))
+    hl.exec_cmd("bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.metro/minimize.sh " .. table.concat(fallback, " "))
   end
 end)

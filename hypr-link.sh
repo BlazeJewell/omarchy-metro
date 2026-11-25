@@ -12,11 +12,11 @@
 set -u
 HYPR="$HOME/.config/hypr"
 conf="$HYPR/hyprland.lua"
-mark='-- jake.sidebar plugin'
-line='do local f = (os.getenv("HOME") or "") .. "/.config/omarchy/plugins/jake.sidebar/hypr/init.lua" local h = io.open(f) if h then h:close() dofile(f) end end '"$mark"' (skipped when the plugin is removed)'
+mark='-- jake.metro plugin'
+line='do local f = (os.getenv("HOME") or "") .. "/.config/omarchy/plugins/jake.metro/hypr/init.lua" local h = io.open(f) if h then h:close() dofile(f) end end '"$mark"' (skipped when the plugin is removed)'
 [[ -f $conf ]] || exit 0
 # one at a time (the sidebar starts once per shell, install.sh may run too)
-exec 9>"${XDG_RUNTIME_DIR:-/tmp}/jake-sidebar-hypr-link.lock"
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/jake-metro-hypr-link.lock"
 flock 9
 
 if [[ ${1:-} == --remove ]]; then

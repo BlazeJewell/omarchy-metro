@@ -6,9 +6,9 @@
 # The layout is the sidebar-*.json files in ~/.config/omarchy (sections and their
 # order, pins, hidden icons, profiles). Per-machine display scales are left out.
 set -euo pipefail
-DEST="$HOME/.config/omarchy/plugins/jake.sidebar"
+DEST="$HOME/.config/omarchy/plugins/jake.metro"
 CFG="$HOME/.config/omarchy"
-FILES=(sidebar-settings.json sidebar-pins.json sidebar-hidden.json sidebar-profiles.json)
+FILES=(metro-settings.json metro-pins.json metro-hidden.json metro-profiles.json)
 # Notifications dock top-left against the sidebar: notifications/ is a clone of
 # omarchy.notifications, linked in as its own plugin (jake.notifications).
 link_notifications() {

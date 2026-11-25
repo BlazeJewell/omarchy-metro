@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "id": "jake.sidebar",
-  "name": "Sidebar",
-  "version": "1.0.0",
+  "id": "jake.metro",
+  "name": "Metro Sidebar",
+  "version": "0.1.0",
   "author": "jake",
-  "description": "Wide left sidebar: clock, system stats, workspaces, launcher, open windows, tray and status widgets.",
+  "description": "Metro-style left column: live tiles, Super+Space menu, quick settings, notifications and a panorama overview.",
   "kinds": ["bar"],
   "entryPoints": {
     "bar": "Sidebar.qml"

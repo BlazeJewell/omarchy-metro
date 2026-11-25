@@ -21,7 +21,7 @@ bash "$here/hypr-link.sh"
 
 # one at a time: the sidebar may start again while this runs (enabling a
 # plugin can restart the shell)
-exec 9>"${XDG_RUNTIME_DIR:-/tmp}/jake-sidebar-setup.lock"
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/jake-metro-setup.lock"
 flock 9
 [[ ${1:-} == --force ]] && rm -f "$done_file"
 [[ -e $done_file ]] && exit 0

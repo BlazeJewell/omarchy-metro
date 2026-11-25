@@ -50,7 +50,7 @@ Item {
     var s = root.userSettings ? root.userSettings.width : undefined
     if (s >= 200) return Math.round(s)
     var w = barConfig && barConfig.sidebarWidth
-    return w > 120 ? Math.round(w) : 280
+    return w > 120 ? Math.round(w) : 360
   }
   // Omarchy widgets kept loaded (hidden) so their panels open docked in the
   // sidebar: the stock bar's right section, plus any other panel a shortcut asks
@@ -99,8 +99,8 @@ Item {
   // ---- where each plugin goes ---------------------------------------------------
   // New plugins go in the Plugins row. A plugin given a section of its own
   // ("+ add section") is noted as "section" so it leaves the row ("status":
-  // in the Status row). Kept per machine in ~/.config/omarchy/sidebar-plugin-places.json.
-  readonly property string placesPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-plugin-places.json"
+  // in the Status row). Kept per machine in ~/.config/omarchy/metro-plugin-places.json.
+  readonly property string placesPath: Quickshell.env("HOME") + "/.config/omarchy/metro-plugin-places.json"
   property var pluginPlaces: ({})
   FileView {
     path: root.placesPath
@@ -114,8 +114,8 @@ Item {
     Quickshell.execDetached(["bash", "-c", "printf '%s\\n' \"$1\" > \"$2\"", "sh", JSON.stringify(next, null, 2), root.placesPath])
   }
   // Plugin widgets / tray icons hidden from the sidebar ("tray:<id>" for tray
-  // icons), kept in ~/.config/omarchy/sidebar-hidden.json (not shell.json).
-  readonly property string hiddenPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-hidden.json"
+  // icons), kept in ~/.config/omarchy/metro-hidden.json (not shell.json).
+  readonly property string hiddenPath: Quickshell.env("HOME") + "/.config/omarchy/metro-hidden.json"
   property var hiddenIds: []
   property var pendingHidden: null
   readonly property var hiddenNow: root.pendingHidden || root.hiddenIds
@@ -159,9 +159,34 @@ Item {
     function syncHidden(): void { barHiddenProbe.running = true }
   }
   readonly property string fontFamily: Style.font.family
-  readonly property color foreground: Commons.Color.bar.text
+  // ---- Metro look ----------------------------------------------------------
+  // Words in Selawik (Microsoft's open Segoe stand-in, bundled in fonts/, OFL);
+  // icon glyphs keep using fontFamily (the theme's Nerd Font). One accent colour
+  // (general.accent, cobalt by default) and a black panel unless "theme" is chosen.
+  FontLoader { source: Qt.resolvedUrl("fonts/selawkl.ttf") }
+  FontLoader { source: Qt.resolvedUrl("fonts/selawksl.ttf") }
+  FontLoader { source: Qt.resolvedUrl("fonts/selawk.ttf") }
+  FontLoader { source: Qt.resolvedUrl("fonts/selawksb.ttf") }
+  readonly property string metroFont: "Selawik"
+  readonly property bool themePanel: root.setting("general", "panelColor") === "theme"
+  readonly property color accent: {
+    var a = String(root.setting("general", "accent") || "")
+    return /^#[0-9a-fA-F]{6}$/.test(a) ? a : "#0050EF"
+  }
+  // Windows Phone 8's accents
+  readonly property var accentChoices: [
+    ["#0050EF", "cobalt"], ["#1BA1E2", "cyan"], ["#00ABA9", "teal"], ["#008A00", "emerald"], ["#60A917", "green"], ["#A4C400", "lime"],
+    ["#6A00FF", "indigo"], ["#AA00FF", "violet"], ["#F472D0", "pink"], ["#D80073", "magenta"], ["#A20025", "crimson"], ["#E51400", "red"],
+    ["#FA6800", "orange"], ["#F0A30A", "amber"], ["#E3C800", "yellow"], ["#825A2C", "brown"], ["#6D8764", "olive"], ["#647687", "steel"],
+    ["#76608A", "mauve"], ["#87794E", "taupe"]
+  ]
+  // accent as text: lifted a little toward white when it's too dark to read on black
+  readonly property color accentText: Qt.tint(root.accent, Qt.rgba(1, 1, 1, root.accent.hslLightness < 0.45 && !root.themePanel ? 0.35 : 0))
+  // the dark ground the live tiles and boxes sit on
+  readonly property color tileGround: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.09)
+  readonly property color foreground: root.themePanel ? Commons.Color.bar.text : "#FFFFFF"
   readonly property color barForeground: Commons.Color.bar.text
-  readonly property color background: Commons.Color.bar.background
+  readonly property color background: root.themePanel ? Commons.Color.bar.background : "#000000"
   readonly property color urgent: Commons.Color.bar.active
   readonly property color dim: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.55)
   readonly property color faint: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.12)
@@ -572,9 +597,9 @@ Item {
 
 
   // ---- pinned apps --------------------------------------------------------
-  // Kept in ~/.config/omarchy/sidebar-pins.json, not shell.json: any write to
+  // Kept in ~/.config/omarchy/metro-pins.json, not shell.json: any write to
   // shell.json makes the shell rebuild the bar, which shoves windows around.
-  readonly property string pinsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-pins.json"
+  readonly property string pinsPath: Quickshell.env("HOME") + "/.config/omarchy/metro-pins.json"
   property var savedPins: []
   property bool pinsSaved: false   // the file exists: pins are the user's own
   property var pendingPins: null
@@ -857,13 +882,13 @@ Item {
   function fsRestore(list) { return "bash " + Util.shellQuote(root.fsmemScript) + " restore" + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
   // The next new window tiles instead of opening alone (Shift+click, drag-and-drop):
   // a short-lived note read by hypr/solo.lua.
-  readonly property string tileNextFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-tile-next"
+  readonly property string tileNextFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-metro-tile-next"
   function tileNextCommand() { return "echo $(( $(date +%s) + 30 )) > " + Util.shellQuote(root.tileNextFile) }
   // Shift state, written by pass-through Shift binds in hypr/binds.lua
   // (the sidebar has no keyboard focus, so it can't see modifiers itself).
   property bool shiftHeld: false
   FileView {
-    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-shift"
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-metro-shift"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -1056,7 +1081,7 @@ Item {
   property var disabledResults: ({})
 
   ShellIpc {
-    target: "jake.sidebar"
+    target: "jake.metro"
     function search() { root.toggleSearch() }
     function openSearch() { root.enterSearch() }
     function closeSearch() { root.exitSearch() }
@@ -1570,10 +1595,10 @@ Item {
   }
 
   // ---- scale remembered per monitor + resolution ----------------------------
-  // Kept in ~/.config/omarchy/sidebar-display.json: { lastMode: {mon: res}, scales: {"mon:res": scale} }.
+  // Kept in ~/.config/omarchy/metro-display.json: { lastMode: {mon: res}, scales: {"mon:res": scale} }.
   // When a monitor comes back at a different resolution (a dual-mode switch),
   // the scale last used at that resolution is put back.
-  readonly property string displayStatePath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-display.json"
+  readonly property string displayStatePath: Quickshell.env("HOME") + "/.config/omarchy/metro-display.json"
   property var displayState: ({ lastMode: {}, scales: {} })
   property bool displayStateLoaded: false
   FileView {
@@ -1807,7 +1832,7 @@ Item {
   }
 
   // ---- sidebar settings (edited in the "Edit sidebar" panel) -----------------
-  // Kept in ~/.config/omarchy/sidebar-settings.json; anything not set there
+  // Kept in ~/.config/omarchy/metro-settings.json; anything not set there
   // uses these defaults, which are how the sidebar looks out of the box.
   readonly property var settingsDefaults: ({
     clock: { show: true, h24: true, date: true, seconds: false, calendar: true },
@@ -1816,13 +1841,13 @@ Item {
     workspaces: { show: true, count: 5, style: "numbers", scroll: true },
     media: { show: false, idle: true },
     notifications: { show: false, count: 4 },
-    search: { show: true, clip: true },
-    apps: { running: true, group: true, compact: false, indicator: "bar", icons: false, badges: true, workspace: false, hints: true, hintSymbols: true },
+    search: { show: true, clip: true, dim: true },
+    apps: { running: true, group: true, compact: false, indicator: "bar", icons: true, badges: true, workspace: false, hints: true, hintSymbols: true, tiles: true, bigTiles: 2 },
     bottom: { plugins: true },
     tray: { show: true, align: "right" },
-    general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 10, windowBorder: 0, lookScope: "windows" }
+    general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 0, windowBorder: 0, lookScope: "windows", accent: "#0050EF", panelColor: "black" }
   })
-  readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-settings.json"
+  readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/metro-settings.json"
   property var userSettings: ({})
   FileView {
     path: root.settingsPath
@@ -1881,7 +1906,7 @@ Item {
   readonly property int lookBorder: Number(root.setting("general", "windowBorder")) || 0
   property var windowBase: null       // [border, rounding] from your config
   FileView {
-    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-sidebar-window-base"
+    path: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/jake-metro-window-base"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -1980,7 +2005,10 @@ Item {
   function sectionShown(section) { return root.setting(section, "show") !== false }
   function sectionOpacity(section) { return root.setting(section, "show") === false ? 0.35 : 1 }
   // a little taller when apps show a hint line under their name
-  readonly property int rowH: (root.setting("apps", "compact") ? 30 : 36) + (root.setting("apps", "hints") !== false ? 4 : 0)
+  readonly property int rowH: (root.setting("apps", "compact") ? 34 : 44) + (root.setting("apps", "hints") !== false ? 6 : 0)
+  // Metro: pinned apps as tiles above the list of other running apps
+  readonly property bool tilesOn: root.setting("apps", "tiles") !== false
+  readonly property int bigTiles: Math.max(0, Number(root.setting("apps", "bigTiles") || 0))
   // Order of the sections down the sidebar (dragged in edit mode).
   readonly property var defaultOrder: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "apps", "tray", "bottom"]
   readonly property var sectionOrder: {
@@ -2297,7 +2325,7 @@ Item {
   }
 
   // Expanded window lists, remembered across restarts.
-  readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-state.json"
+  readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/metro-state.json"
   FileView {
     path: root.statePath
     printErrors: false
@@ -2334,7 +2362,7 @@ Item {
     root.userSettings = JSON.parse(prev)
   }
   function resetAll() { root.saveSettings({}) }
-  readonly property string profilesPath: Quickshell.env("HOME") + "/.config/omarchy/sidebar-profiles.json"
+  readonly property string profilesPath: Quickshell.env("HOME") + "/.config/omarchy/metro-profiles.json"
   property var profiles: ({})
   property bool profileNaming: false
   FileView {
@@ -2521,7 +2549,7 @@ Item {
         onPositionChanged: function(m) {
           if (!resizing) return
           var p = mapToItem(win.contentItem, m.x, m.y)
-          root.liveWidth = Math.max(220, Math.min(400, Math.round(p.x / 10) * 10))
+          root.liveWidth = Math.max(200, Math.min(560, Math.round(p.x / 10) * 10))
         }
         onReleased: {
           resizing = false
@@ -2540,7 +2568,7 @@ Item {
         color: "transparent"
         Rectangle {
           anchors.fill: parent
-          radius: 4
+          radius: 0
           color: root.background
           border.color: root.faint
           Text {
@@ -2570,6 +2598,8 @@ Item {
         return null
       }
       readonly property bool dragOverSidebar: win.dragX < root.sidebarWidth
+      // the app rows for this monitor, built once and shared by the tiles and the list
+      readonly property var appRows: root.appItems(win.monitorName)
       function beginDrag(item) {
         win.dragItem = item
         win.dragRects = []
@@ -2579,9 +2609,13 @@ Item {
       // (index counts rows; y is the insertion line in the list's own coordinates).
       property var listDrop: null
       function listDropAt(x, y) {
+        var td = win.tileDropAt(x, y)
+        if (td) return td
         if (x >= root.sidebarWidth || !appList.visible) return null
         var p = appList.mapFromItem(win.contentItem, x, y)
         if (p.y < -12 || p.y > appList.height + 12) return null
+        // Metro tiles: pins live in the tiles, so dropping on the running list unpins
+        if (root.tilesOn) return { index: 9999, y: p.y + appList.contentY, unpin: true }
         var rows = appList.model || []
         var cy = p.y + appList.contentY
         var index = rows.length, lineY = appList.contentHeight
@@ -2589,12 +2623,26 @@ Item {
           var it = appList.itemAtIndex(i)
           if (!it) continue
           if (rows[i].separator) { if (cy < it.y + it.height) { index = i; lineY = it.y; break } else continue }
-          if (cy < it.y + Math.min(it.height, 36) / 2) { index = i; lineY = it.y - 1; break }
+          if (cy < it.y + Math.min(it.height, root.rowH) / 2) { index = i; lineY = it.y - 1; break }
         }
         // rows before the separator are the pinned ones; the separator itself counts as "end of pinned"
         var pinnedCount = rows.filter(function(r) { return r.pinned }).length
         var listIndex = index <= pinnedCount ? index : pinnedCount + 1 + (index - pinnedCount)
         return { index: listIndex, y: lineY }
+      }
+      // Where a drag over the pinned tiles would land: before the tile under the
+      // pointer (or after the last one). Index counts pins, like the list's.
+      function tileDropAt(x, y) {
+        if (!root.tilesOn || x >= root.sidebarWidth || !pinTiles.visible) return null
+        var p = pinTiles.mapFromItem(win.contentItem, x, y)
+        if (p.x < -6 || p.y < -10 || p.x > pinTiles.width + 6 || p.y > pinTiles.height + 10) return null
+        var rects = pinTiles.rects, n = rects.length
+        for (var i = 0; i < n; i++) {
+          var r = rects[i]
+          if (p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h)
+            return { index: p.x < r.x + r.w / 2 ? i : i + 1, y: r.y, tile: true, over: i }
+        }
+        return { index: n, y: pinTiles.height, tile: true, over: -1 }
       }
       // The app row (and window row, if expanded) under a point in the list.
       function hoveredAt(x, y) {
@@ -2607,11 +2655,11 @@ Item {
         var row = i >= 0 ? (appList.model || [])[i] : null
         if (!row || !it || row.separator) return null
         var local = cy - it.y
-        if (local < 36) return { row: row, window: null, index: i, itemY: it.y }
-        var k = Math.floor((local - 38) / 30)
+        if (local < root.rowH) return { row: row, window: null, index: i, itemY: it.y }
+        var k = Math.floor((local - root.rowH - 2) / 30)
         var wins = row.windows || []
         if (!it.expanded || k < 0 || k >= wins.length) return { row: row, window: null, index: i, itemY: it.y }
-        return { row: row, window: wins[k], sub: k, index: i, itemY: it.y, subY: it.y + 38 + k * 30 }
+        return { row: row, window: wins[k], sub: k, index: i, itemY: it.y, subY: it.y + root.rowH + 2 + k * 30 }
       }
       // Spring-loading: hold a drag over another app (or one of its windows) to open it.
       property string springKey: ""
@@ -2708,7 +2756,7 @@ Item {
         anchors { top: true; bottom: true; left: true; right: true }
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
-        WlrLayershell.namespace: "jake-sidebar-drop"
+        WlrLayershell.namespace: "jake-metro-drop"
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
         mask: Region {}
         Rectangle {
@@ -2717,7 +2765,7 @@ Item {
           y: win.dropRect ? win.dropRect.y : 12
           width: win.dropRect ? win.dropRect.w : parent.width - root.sidebarWidth - 24
           height: win.dropRect ? win.dropRect.h : parent.height - 24
-          radius: 6
+          radius: 0
           color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
           border.width: 2
           border.color: root.urgent
@@ -2729,7 +2777,7 @@ Item {
           y: win.dragY + 10
           width: dragLabel.implicitWidth + 16
           height: dragLabel.implicitHeight + 8
-          radius: 4
+          radius: 0
           color: root.background
           border.width: 1
           border.color: root.faint
@@ -2744,16 +2792,17 @@ Item {
         }
       }
 
-      // While searching, the rest of the screen catches one click to close it.
+      // While searching, the rest of the screen catches one click to close it,
+      // and (Metro) dims behind the menu so the column is what you read.
       PanelWindow {
         screen: win.screen
         visible: root.searching && root.searchMonitor === win.monitorName
-        color: "transparent"
+        color: root.setting("search", "dim") === false ? "transparent" : Qt.rgba(0, 0, 0, 0.5)
         anchors { top: true; bottom: true; left: true; right: true }
         margins.left: root.sidebarWidth
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
-        WlrLayershell.namespace: "jake-sidebar-search-dismiss"
+        WlrLayershell.namespace: "jake-metro-search-dismiss"
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
         MouseArea {
           anchors.fill: parent
@@ -2788,7 +2837,7 @@ Item {
         margins.left: inset
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: WlrLayer.Overlay
-        WlrLayershell.namespace: "jake-sidebar-overview"
+        WlrLayershell.namespace: "jake-metro-overview"
         WlrLayershell.keyboardFocus: win.overviewHere && root.overviewOpen ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None   // on-demand, not exclusive: exclusive also blocks the pointer from the sidebar
 
         readonly property real p: root.ovProgress
@@ -2808,16 +2857,41 @@ Item {
           allWins.forEach(function(t) { if (t.workspace && t.workspace.id > 0 && ids.indexOf(t.workspace.id) === -1) ids.push(t.workspace.id) })
           return ids.sort(function(a, b) { return a - b })
         }
+        // Metro panorama: one column per workspace (minimized last), side by side
+        function wsKey(t) { return root.isMinimized(t) ? 1000 : (t.workspace && t.workspace.id > 0 ? t.workspace.id : 999) }
         readonly property var wins: allWins.filter(function(t) {
           if (overviewWin.wsFilter > 0 && !(t.workspace && t.workspace.id === overviewWin.wsFilter)) return false
           var q = overviewWin.query.toLowerCase().trim()
           if (!q) return true
           var hay = (String(t.title || "") + " " + root.overviewAppName(t)).toLowerCase()
           return q.split(/\s+/).every(function(w) { return hay.indexOf(w) >= 0 })
-        })
+        }).map(function(t, i) { return { t: t, i: i } })
+          .sort(function(a, b) { return (overviewWin.wsKey(a.t) - overviewWin.wsKey(b.t)) || (a.i - b.i) })
+          .map(function(x) { return x.t })
         readonly property int count: wins.length
-        readonly property int cols: Math.max(1, Math.ceil(Math.sqrt(count)))
-        readonly property int rowsN: Math.max(1, Math.ceil(count / cols))
+        readonly property var wsCols: {
+          var keys = []
+          wins.forEach(function(t) { var k = overviewWin.wsKey(t); if (keys.indexOf(k) === -1) keys.push(k) })
+          return keys
+        }
+        // per window: its column and its place in that column
+        readonly property var slots: {
+          var out = [], per = {}
+          wins.forEach(function(t) { var k = overviewWin.wsKey(t); per[k] = (per[k] || 0); out.push({ c: overviewWin.wsCols.indexOf(k), r: per[k] }); per[k]++ })
+          return out
+        }
+        readonly property int rowsN: { var m = 1; slots.forEach(function(sl) { m = Math.max(m, sl.r + 1) }); return m }
+        readonly property int cols: Math.max(1, wsCols.length)
+        readonly property real colGap: 56
+        readonly property real colW: Math.min(520, Math.max(280, (width - pad * 2 - colGap) / 2.25))
+        readonly property real totalW: cols * colW + (cols - 1) * colGap
+        readonly property int selCol: slots[sel] ? slots[sel].c : 0
+        // pan so the selected workspace sits in view; the next one peeks in at the edge
+        property real panX: 0
+        readonly property real panTarget: Math.max(0, Math.min(totalW - (width - pad * 2), selCol * (colW + colGap) - (width - pad * 2 - colW) / 2))
+        onPanTargetChanged: panX = panTarget
+        Behavior on panX { NumberAnimation { duration: Style.duration(260); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+        function firstOfCol(c) { for (var i = 0; i < slots.length; i++) if (slots[i].c === c) return i; return -1 }
         onQueryChanged: sel = 0
         onWsFilterChanged: sel = 0
         onVisibleChanged: if (visible) { query = ""; wsFilter = 0; sel = 0 }
@@ -2828,13 +2902,13 @@ Item {
           if (!(t.activated && !root.isMinimized(t))) root.activateWindow(t, root.shiftHeld)
         }
         readonly property real pad: 48
-        readonly property real topPad: 64     // room for the search line and workspace strip
-        readonly property real gap: 28
-        readonly property real cellW: (width - pad * 2 - gap * (cols - 1)) / cols
-        readonly property real cellH: (height - pad - topPad - gap * (rowsN - 1)) / rowsN
+        readonly property real topPad: Math.min(260, height * 0.28)   // the big title and the workspace captions
+        readonly property real gap: 26
+        readonly property real cellW: colW
+        readonly property real cellH: Math.min(colW * 0.72, (height - topPad - 76 - gap * (rowsN - 1)) / rowsN)
         function lerp(a, b) { return a + (b - a) * overviewWin.p }
 
-        // jake.sidebar: the wallpaper behind the previews, so the overview looks
+        // jake.metro: the wallpaper behind the previews, so the overview looks
         // the same over a fullscreen app as over the desktop
         Image {
           visible: root.wallPath !== ""
@@ -2858,10 +2932,10 @@ Item {
             var n = overviewWin.count, c = overviewWin.cols
             if (event.key === Qt.Key_Escape) { if (overviewWin.query) overviewWin.query = ""; else root.closeOverview() }
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) overviewWin.pickSelected()
-            else if (event.key === Qt.Key_Right) overviewWin.sel = n ? (overviewWin.sel + 1) % n : 0
-            else if (event.key === Qt.Key_Left) overviewWin.sel = n ? (overviewWin.sel - 1 + n) % n : 0
-            else if (event.key === Qt.Key_Down) overviewWin.sel = Math.min(n - 1, overviewWin.sel + c)
-            else if (event.key === Qt.Key_Up) overviewWin.sel = Math.max(0, overviewWin.sel - c)
+            else if (event.key === Qt.Key_Right) { var nr = overviewWin.firstOfCol(Math.min(overviewWin.cols - 1, overviewWin.selCol + 1)); if (nr >= 0) overviewWin.sel = nr }
+            else if (event.key === Qt.Key_Left) { var nl = overviewWin.firstOfCol(Math.max(0, overviewWin.selCol - 1)); if (nl >= 0) overviewWin.sel = nl }
+            else if (event.key === Qt.Key_Down) { if (overviewWin.slots[overviewWin.sel + 1] && overviewWin.slots[overviewWin.sel + 1].c === overviewWin.selCol) overviewWin.sel++ }
+            else if (event.key === Qt.Key_Up) { if (overviewWin.sel > 0 && overviewWin.slots[overviewWin.sel - 1].c === overviewWin.selCol) overviewWin.sel-- }
             else if (event.key === Qt.Key_Tab) {
               var list = [0].concat(overviewWin.wsList), at = list.indexOf(overviewWin.wsFilter)
               overviewWin.wsFilter = list[(at + 1) % list.length]
@@ -2874,18 +2948,57 @@ Item {
           MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; enabled: root.overviewOpen; onClicked: root.closeOverview() }
         }
 
+        // the giant panorama title, drifting slower than the columns
+        Text {
+          x: overviewWin.pad - 14 - overviewWin.panX * 0.35
+          y: -Math.round(overviewWin.topPad * 0.16)
+          opacity: overviewWin.p
+          textFormat: Text.PlainText
+          text: "overview"
+          color: root.foreground
+          font.family: root.metroFont; font.weight: Font.Light
+          font.pixelSize: Math.round(overviewWin.topPad * 0.78)
+          font.letterSpacing: -4
+        }
+        // a caption over each workspace column
+        Repeater {
+          model: overviewWin.wsCols
+          Row {
+            required property var modelData
+            required property int index
+            readonly property bool here: modelData === (win.monitor && win.monitor.activeWorkspace ? win.monitor.activeWorkspace.id : -1)
+            x: overviewWin.pad + index * (overviewWin.colW + overviewWin.colGap) - overviewWin.panX
+            y: overviewWin.topPad - 54
+            opacity: overviewWin.p
+            spacing: 12
+            Text {
+              textFormat: Text.PlainText
+              text: modelData === 1000 ? "minimized" : modelData === 999 ? "other" : "workspace " + ((modelData - 1) % 10 + 1)
+              color: parent.here || index === overviewWin.selCol ? root.foreground : root.dim
+              font.family: root.metroFont; font.pixelSize: 34; font.weight: Font.Light
+            }
+            Text {
+              anchors.baseline: parent.children[0].baseline
+              textFormat: Text.PlainText
+              text: (function(k) { var n = 0; overviewWin.wins.forEach(function(t) { if (overviewWin.wsKey(t) === k) n++ }); return n === 1 ? "1 window" : n + " windows" })(modelData) + (parent.here ? " · here" : "")
+              color: root.dim
+              font.family: root.metroFont; font.pixelSize: 14
+            }
+          }
+        }
+
         // search line + workspace strip
         RowLayout {
           x: overviewWin.pad
           width: overviewWin.width - overviewWin.pad * 2
-          y: 22
+          y: overviewWin.height - 42
           opacity: overviewWin.p
           spacing: 14
           Text {
             textFormat: Text.PlainText
-            text: overviewWin.query ? "⌕ " + overviewWin.query : "⌕ type to search"
+            text: overviewWin.query ? "⌕ " + overviewWin.query : "⌕ type to search · ← → workspaces · enter opens"
             color: overviewWin.query ? root.foreground : root.dim
-            font.family: root.fontFamily; font.pixelSize: 12; font.bold: !!overviewWin.query
+            font.family: root.metroFont; font.pixelSize: 15
           }
           Item { Layout.fillWidth: true }
           Repeater {
@@ -2894,9 +3007,9 @@ Item {
               required property var modelData
               readonly property bool on: overviewWin.wsFilter === modelData
               textFormat: Text.PlainText
-              text: modelData === 0 ? "All" : String((modelData - 1) % 10 + 1)
+              text: modelData === 0 ? "all" : String((modelData - 1) % 10 + 1)
               color: on ? root.foreground : (wsfMouse.containsMouse ? root.foreground : root.dim)
-              font.family: root.fontFamily; font.pixelSize: 12; font.bold: on; font.underline: on
+              font.family: root.metroFont; font.pixelSize: 20; font.weight: on ? Font.Normal : Font.Light
               MouseArea { id: wsfMouse; anchors.fill: parent; anchors.margins: -5; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: overviewWin.wsFilter = modelData }
             }
           }
@@ -2928,16 +3041,16 @@ Item {
             readonly property real srcH: geo ? geo.h : 1000
             readonly property real startX: hidden || !geo ? -srcW : geo.x - win.screen.x - overviewWin.inset
             readonly property real startY: hidden || !geo ? (overviewWin.height - srcH) / 2 : geo.y - win.screen.y
-            // its slot in the grid (a short last row is centred)
-            readonly property int col: index % overviewWin.cols
-            readonly property int row: Math.floor(index / overviewWin.cols)
-            readonly property int inRow: row === overviewWin.rowsN - 1 ? overviewWin.count - overviewWin.cols * (overviewWin.rowsN - 1) : overviewWin.cols
-            readonly property real cellX: overviewWin.pad + col * (overviewWin.cellW + overviewWin.gap) + (overviewWin.cols - inRow) * (overviewWin.cellW + overviewWin.gap) / 2
+            // its slot in the panorama: its workspace's column, stacked down from the caption
+            readonly property var slot: overviewWin.slots[index] || { c: 0, r: 0 }
+            readonly property int col: slot.c
+            readonly property int row: slot.r
+            readonly property real cellX: overviewWin.pad + col * (overviewWin.colW + overviewWin.colGap) - overviewWin.panX
             readonly property real cellY: overviewWin.topPad + row * (overviewWin.cellH + overviewWin.gap)
             readonly property real fit: Math.min(overviewWin.cellW / srcW, (overviewWin.cellH - 34) / srcH)
             readonly property real endW: srcW * fit
             readonly property real endH: srcH * fit
-            readonly property real endX: cellX + (overviewWin.cellW - endW) / 2
+            readonly property real endX: cellX
             readonly property real endY: cellY + (overviewWin.cellH - 34 - endH) / 2
             readonly property bool dragged: overviewWin.dragAddr !== "" && overviewWin.dragAddr === root.addrOf(modelData)
             property real grabX: 0
@@ -2954,11 +3067,11 @@ Item {
               scale: cell.dragged ? 0.85 : 1
               opacity: cell.dragged ? 0.9 : 1
               Behavior on scale { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
-              radius: 12
+              radius: 0
               color: cellMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
                    : !shot.hasContent ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
-              border.width: (cell.index === overviewWin.sel ? 2 : (cell.front ? 1 : 0)) * overviewWin.p
-              border.color: cell.index === overviewWin.sel ? root.foreground : root.urgent
+              border.width: (cell.index === overviewWin.sel ? 3 : (cell.front ? 3 : 0)) * overviewWin.p
+              border.color: cell.index === overviewWin.sel ? root.foreground : root.accent
               ScreencopyView {
                 id: shot
                 anchors.fill: parent
@@ -2980,7 +3093,7 @@ Item {
                 y: 4
                 width: parent.width / 2 - 4
                 height: parent.height - 8
-                radius: 8
+                radius: 0
                 color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.28)
                 border.width: 2
                 border.color: root.urgent
@@ -2991,12 +3104,12 @@ Item {
               y: frame.y + frame.height + 8
               width: overviewWin.cellW
               opacity: overviewWin.p
-              horizontalAlignment: Text.AlignHCenter
+              horizontalAlignment: Text.AlignLeft
               textFormat: Text.PlainText
               elide: Text.ElideRight
-              text: (cell.hidden ? "◌ " : "") + String(cell.modelData.title || root.overviewAppName(cell.modelData))
+              text: String(root.overviewAppName(cell.modelData)).toLowerCase() + "  ·  " + String(cell.modelData.title || "")
               color: cell.hidden ? root.dim : root.foreground
-              font.family: root.fontFamily; font.pixelSize: 12; font.bold: cell.front
+              font.family: root.metroFont; font.pixelSize: 15
             }
             MouseArea {
               id: cellMouse
@@ -3115,7 +3228,7 @@ Item {
         }
         Rectangle {
           anchors.fill: parent
-          radius: 6
+          radius: 0
           color: root.background
           border.width: 1
           border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
@@ -3139,7 +3252,7 @@ Item {
                 Rectangle {
                   visible: !menuRow.modelData.sep
                   anchors.fill: parent
-                  radius: 4
+                  radius: 0
                   color: menuMouse.containsMouse ? root.faint : "transparent"
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
@@ -3508,7 +3621,7 @@ Item {
       function sectionBlocks() {
         var blocks = {
           clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
-          apps: [menuList, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
+          apps: [menuList, pinTiles, runHeader, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
         }
         for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
         return blocks
@@ -3643,7 +3756,7 @@ Item {
           y: bottomBox ? bottomBox.y - height / 2 : 0
           width: addText.implicitWidth + 14
           height: 18
-          radius: 4
+          radius: 0
           color: addMouse.containsMouse || root.addOpen ? root.foreground : root.background
           border.width: 1
           border.color: root.dim
@@ -3657,7 +3770,7 @@ Item {
           x: 10
           width: parent.width - 20
           height: 2
-          radius: 1
+          radius: 0
           y: editOverlay.dropLineY
           color: root.foreground
         }
@@ -3677,12 +3790,12 @@ Item {
         function boxItems(id, items) { return win.trimmedIds.indexOf(id) !== -1 && win.trimBoxes[id] ? [win.trimBoxes[id]] : items }
         readonly property var boxes: {
           var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
-          var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
+          var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + pinTiles.y + pinTiles.height + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
           var rev3 = win.trimRev + win.trimmedIds.length
           var out = {
             clock: boxFor(boxItems("clock", [secClock])), status: boxFor(boxItems("status", [secStatus])), system: boxFor(boxItems("system", [secStats, secNet])),
             workspaces: boxFor(boxItems("workspaces", [secWs])), search: boxFor(boxItems("search", [secSearch])), media: boxFor(boxItems("media", [secMedia])),
-            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
+            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([pinTiles, runHeader, appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
           }
           for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
           return out
@@ -3727,7 +3840,7 @@ Item {
             Rectangle {
               anchors.fill: parent
               visible: ebox.picked
-              radius: 8
+              radius: 0
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
               border.width: 2
               border.color: root.foreground
@@ -3738,7 +3851,7 @@ Item {
               y: -7
               width: elabel.implicitWidth + 8
               height: 13
-              radius: 3
+              radius: 0
               color: ebox.picked ? root.foreground : root.background
               Text {
                 id: elabel
@@ -3758,7 +3871,7 @@ Item {
                 required property string modelData
                 readonly property string sid: ebox.modelData.id
                 z: 5
-                width: 44; height: 8; radius: 4
+                width: 44; height: 8; radius: 0
                 x: (parent.width - width) / 2 + (modelData === "top" ? 40 : 0)
                 y: modelData === "top" ? -height / 2 : parent.height - height / 2
                 color: trimMouse.containsMouse || trimMouse.pressed ? root.foreground : root.background
@@ -3807,7 +3920,7 @@ Item {
               y: -7
               width: 15
               height: 13
-              radius: 3
+              radius: 0
               color: xRemMouse.containsMouse ? root.urgent : root.background
               border.width: 1
               border.color: xRemMouse.containsMouse ? root.urgent : root.dim
@@ -3916,7 +4029,7 @@ Item {
         implicitWidth: 380
         exclusionMode: ExclusionMode.Ignore
         WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
-        WlrLayershell.namespace: "jake-sidebar-editor"
+        WlrLayershell.namespace: "jake-metro-editor"
         WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
         Rectangle {
@@ -3935,7 +4048,7 @@ Item {
               Layout.fillWidth: true
               Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 14; font.bold: true }
               Rectangle {
-                implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 4
+                implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 0
                 color: cancelMouse.containsMouse ? root.faint : "transparent"
                 border.width: 1; border.color: root.dim
                 Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
@@ -3943,7 +4056,7 @@ Item {
               }
               Rectangle {
                 Layout.leftMargin: 4
-                implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 4
+                implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 0
                 color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
                 Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.fontFamily; font.pixelSize: 11; font.bold: true }
                 MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
@@ -3978,7 +4091,7 @@ Item {
               Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
-                radius: 5
+                radius: 0
                 color: "transparent"
                 border.width: 1
                 border.color: addInput.activeFocus ? root.dim : root.faint
@@ -4038,7 +4151,7 @@ Item {
                   Rectangle {
                     visible: arow.modelData.kind !== "header"
                     anchors.fill: parent
-                    radius: 4
+                    radius: 0
                     color: arow.sel ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) : "transparent"
                     Rectangle { visible: arow.sel; width: 2; height: parent.height - 12; anchors.verticalCenter: parent.verticalCenter; color: root.foreground }
                     ColumnLayout {
@@ -4169,6 +4282,8 @@ Item {
               Layout.fillWidth: true
               spacing: 6
               EdHeading { text: "APP LIST" }
+              OptRow { label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
+              StepRow { visible: root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
               OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
               OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
@@ -4381,8 +4496,34 @@ Item {
 
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.faint }
             EdHeading { text: "WHOLE SIDEBAR" }
-            StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 220; max: 400; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
+            StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 200; max: 560; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
+            OptRow { label: "Panel colour"; options: [["black", "black"], ["theme", "theme"]]; current: root.setting("general", "panelColor"); onPicked: function(v) { root.setSetting("general", "panelColor", v) } }
+            // Metro accent: Windows Phone 8's twenty
+            Text { textFormat: Text.PlainText; text: "Accent"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+            Flow {
+              Layout.fillWidth: true
+              spacing: 4
+              Repeater {
+                model: root.accentChoices
+                Rectangle {
+                  required property var modelData
+                  readonly property bool sel: String(root.accent).toLowerCase() === String(modelData[0]).toLowerCase()
+                  width: 22; height: 22
+                  color: modelData[0]
+                  border.width: sel ? 2 : 0
+                  border.color: root.foreground
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onEntered: tooltip.show(parent, parent.modelData[1])
+                    onExited: tooltip.hide(parent)
+                    onClicked: root.setSetting("general", "accent", parent.modelData[0])
+                  }
+                }
+              }
+            }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
             OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› When it appears"; options: [["float", "over windows"], ["push", "push windows"]]; current: root.setting("general", "autohideMode"); onPicked: function(v) { root.setSetting("general", "autohideMode", v) } }
             OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› Hidden edge"; options: [["show", "show"], ["hide", "hide"]]; current: root.setting("general", "autohideEdge"); onPicked: function(v) { root.setSetting("general", "autohideEdge", v) } }
@@ -4424,7 +4565,7 @@ Item {
               visible: root.profileNaming
               Layout.fillWidth: true
               Layout.preferredHeight: 26
-              radius: 4; color: "transparent"; border.width: 1; border.color: root.dim
+              radius: 0; color: "transparent"; border.width: 1; border.color: root.dim
               TextInput {
                 id: profileInput
                 anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
@@ -4493,7 +4634,7 @@ Item {
         z: 4
         x: parent.width - 4
         width: 2
-        radius: 1
+        radius: 0
         y: sideFlick.y + sideFlick.contentY / Math.max(1, sideFlick.contentHeight) * sideFlick.height
         height: Math.max(20, sideFlick.height * sideFlick.height / Math.max(1, sideFlick.contentHeight))
         color: root.foreground
@@ -4519,22 +4660,31 @@ Item {
             text: Qt.formatTime(clock.date, root.setting("clock", "h24") ? (root.setting("clock", "seconds") ? "HH:mm:ss" : "HH:mm")
                                                                         : (root.setting("clock", "seconds") ? "h:mm:ss AP" : "h:mm AP"))
             color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: 30
+            font.family: root.metroFont
+            font.pixelSize: Math.round(Math.min(68, Math.max(44, root.sidebarWidth * 0.19)))
             font.weight: Font.Light
+            font.letterSpacing: -1
           }
           Item { Layout.fillWidth: true }
-          Text {
+          Column {
             visible: root.setting("clock", "date")
             Layout.alignment: Qt.AlignBottom
-            Layout.bottomMargin: 5
-            textFormat: Text.PlainText
-            text: root.clockAlt ? (Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "d MMM").toUpperCase() + "  W" + root.isoWeek(clock.date))
-                                : Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "ddd d MMM").toUpperCase()
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: 11
-            font.letterSpacing: 1
+            Layout.bottomMargin: 6
+            readonly property var loc: Qt.locale(Commons.I18n.formatLocale)
+            Text {
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: root.clockAlt ? "week " + root.isoWeek(clock.date) : parent.loc.toString(clock.date, "dddd").toLowerCase()
+              color: root.dim
+              font.family: root.metroFont; font.pixelSize: 15
+            }
+            Text {
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: parent.loc.toString(clock.date, "MMMM d").toLowerCase()
+              color: root.dim
+              font.family: root.metroFont; font.pixelSize: 15
+            }
           }
           // click: calendar; right-click: date with the week number
           HoverHandler { cursorShape: root.setting("clock", "calendar") !== false ? Qt.PointingHandCursor : Qt.ArrowCursor }
@@ -4666,7 +4816,7 @@ Item {
                 readonly property bool today: modelData.toDateString() === clock.date.toDateString()
                 readonly property bool inMonth: modelData.getMonth() === root.calMonth.getMonth()
                 width: calGrid.cell; height: 22
-                radius: 5
+                radius: 0
                 color: today ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent"
                 Text {
                   anchors.centerIn: parent
@@ -4687,22 +4837,39 @@ Item {
                    || (root.gpuFound && (root.setting("system", "gpu") || root.setting("system", "vram") || root.setting("system", "gpuTemp"))))
           opacity: root.sectionOpacity("system")
           Layout.fillWidth: true
-          spacing: 14
+          spacing: 6
+          // Metro live tiles: four to a row, a big light number on each
+          readonly property int perRow: Math.max(1, Math.min(4, statsRep.count))
+          readonly property real tileW: (width - spacing * (perRow - 1)) / perRow
           Repeater {
             id: statsRep
-            model: [["CPU", root.cpu, "cpu"], ["MEM", root.mem, "mem"], ["DSK", root.disk, "disk"],
-                    ["GPU", root.gpu, "gpu"], ["VRM", root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0, "vram"], ["TMP", root.gpuTemp, "gpuTemp", "°"]]
+            model: [["cpu", root.cpu, "cpu"], ["mem", root.mem, "mem"], ["disk", root.disk, "disk"],
+                    ["gpu", root.gpu, "gpu"], ["vram", root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0, "vram"], ["temp", root.gpuTemp, "gpuTemp", "°"]]
                    .filter(function(m) { return root.setting("system", m[2]) && (["gpu", "vram", "gpuTemp"].indexOf(m[2]) === -1 || root.gpuFound) })
-            Row {
+            Rectangle {
               required property var modelData
-              spacing: 5
-              Text { anchors.baseline: statVal.baseline; textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              readonly property bool hot: modelData[1] >= 85
+              width: secStats.tileW
+              height: 62
+              color: hot ? root.accent : root.tileGround
               Text {
-                id: statVal
+                x: 8; y: 4
                 textFormat: Text.PlainText
-                text: Math.round(modelData[1]) + (modelData[3] || "%")
-                color: modelData[1] >= 85 ? root.urgent : root.foreground
-                font.family: root.fontFamily; font.pixelSize: 13; font.bold: true
+                text: Math.round(modelData[1])
+                color: root.foreground
+                font.family: root.metroFont; font.pixelSize: 28; font.weight: Font.Light
+                Text {
+                  anchors.left: parent.right; anchors.baseline: parent.baseline; anchors.leftMargin: 1
+                  textFormat: Text.PlainText; text: modelData[3] || "%"
+                  color: hot ? root.foreground : root.dim
+                  font.family: root.metroFont; font.pixelSize: 13
+                }
+              }
+              Text {
+                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                textFormat: Text.PlainText; text: modelData[0]
+                color: hot ? root.foreground : root.dim
+                font.family: root.metroFont; font.pixelSize: 12
               }
             }
           }
@@ -4716,17 +4883,17 @@ Item {
           Layout.fillWidth: true
           spacing: 10
           Repeater {
-            model: [["DOWN", root.rxRate, root.rxHistory], ["UP", root.txRate, root.txHistory]]
+            model: [["down", root.rxRate, root.rxHistory], ["up", root.txRate, root.txHistory]]
             ColumnLayout {
               required property var modelData
               Layout.fillWidth: true
               Layout.preferredWidth: 1
               spacing: 2
-              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+              Text { textFormat: Text.PlainText; text: modelData[0]; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
               RowLayout {
                 spacing: 3
-                Text { textFormat: Text.PlainText; text: root.rateParts(modelData[1])[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 22; font.bold: true }
-                Text { Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 3; textFormat: Text.PlainText; text: root.rateParts(modelData[1])[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                Text { textFormat: Text.PlainText; text: root.rateParts(modelData[1])[0]; color: root.foreground; font.family: root.metroFont; font.pixelSize: 28; font.weight: Font.Light }
+                Text { Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 4; textFormat: Text.PlainText; text: root.rateParts(modelData[1])[1].toLowerCase(); color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
               }
               // sparkline
               Row {
@@ -4748,8 +4915,8 @@ Item {
                     width: Math.max(1, (spark.width - 23) / 24)
                     height: Math.max(1, v * 22)
                     y: 22 - height
-                    color: v > 0 ? root.foreground : root.faint
-                    opacity: 0.35 + v * 0.65
+                    color: v > 0 ? root.accent : root.faint
+                    opacity: 0.45 + v * 0.55
                   }
                 }
               }
@@ -4797,18 +4964,20 @@ Item {
               }
               readonly property bool dots: root.setting("workspaces", "style") === "dots"
               readonly property bool dropHere: win.dragWs === modelData
-              width: dots ? 14 : 24; height: dots ? 14 : 24; radius: dots ? 7 : 4
-              y: dots ? 5 : 0
-              color: dropHere ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35) : (active ? root.foreground : (dots && occupied ? root.dim : "transparent"))
-              border.width: 1
-              border.color: dropHere ? root.urgent : (active ? root.foreground : (occupied ? root.dim : root.faint))
+              // Metro: plain light numerals, the current one bright (dots: small squares)
+              width: dots ? 12 : Math.max(20, wsNum.implicitWidth + 8); height: dots ? 12 : 36; radius: 0
+              y: dots ? 12 : 0
+              color: dropHere ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.45) : (dots ? (active ? root.accent : (occupied ? root.dim : "transparent")) : "transparent")
+              border.width: dots && !active ? 1 : 0
+              border.color: occupied ? root.dim : root.faint
               Text {
+                id: wsNum
                 visible: !wsBox.dots
                 anchors.centerIn: parent
                 textFormat: Text.PlainText
                 text: ((wsBox.modelData - 1) % 10 + 1).toString()
-                color: wsBox.active ? root.background : (wsBox.occupied ? root.foreground : root.dim)
-                font.family: root.fontFamily; font.pixelSize: 11; font.bold: wsBox.active
+                color: wsBox.active ? root.foreground : (wsBox.occupied ? root.dim : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.32))
+                font.family: root.metroFont; font.pixelSize: 28; font.weight: wsBox.active ? Font.Normal : Font.Light
               }
               MouseArea {
                 anchors.fill: parent
@@ -4826,17 +4995,18 @@ Item {
           opacity: root.sectionOpacity("search")
           readonly property bool active: root.searching && root.searchMonitor === win.monitorName
           Layout.fillWidth: true
-          Layout.preferredHeight: 32
-          radius: 6
-          color: active ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : (searchMouse.containsMouse ? root.faint : "transparent")
-          border.width: 1
-          border.color: active ? root.dim : root.faint
+          Layout.preferredHeight: 40
+          radius: 0
+          // Windows Phone text box: light grey at rest, white with an accent edge while typing
+          color: active ? "#FFFFFF" : (searchMouse.containsMouse ? "#D4D4D4" : "#BFBFBF")
+          border.width: 2
+          border.color: active ? root.accent : "transparent"
           RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 10
             anchors.rightMargin: 6
             spacing: 8
-            Text { textFormat: Text.PlainText; text: "\uf002"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            Text { textFormat: Text.PlainText; text: "\uf002"; color: "#333333"; font.family: root.fontFamily; font.pixelSize: 13 }
             Item {
               Layout.fillWidth: true
               Layout.fillHeight: true
@@ -4845,10 +5015,11 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width
                 clip: true
-                color: root.foreground
-                selectionColor: root.faint
-                font.family: root.fontFamily
-                font.pixelSize: 12
+                color: "#000000"
+                selectionColor: root.accent
+                selectedTextColor: "#FFFFFF"
+                font.family: root.metroFont
+                font.pixelSize: 17
                 enabled: root.searching && root.searchMonitor === win.monitorName
                 onTextChanged: if (root.query !== text) root.query = text
                 Keys.onPressed: function(event) {
@@ -4881,9 +5052,9 @@ Item {
                 width: parent.width
                 textFormat: Text.PlainText
                 text: root.searching && root.activeMenu !== "root" && root.menuItems[root.activeMenu]
-                      ? "Search " + (root.menuItems[root.activeMenu].title || root.menuItems[root.activeMenu].label) + "…" : "Search…"
-                color: root.dim
-                font.family: root.fontFamily; font.pixelSize: 12
+                      ? "search " + String(root.menuItems[root.activeMenu].title || root.menuItems[root.activeMenu].label).toLowerCase() : (root.searching ? "type an app or a command" : "search · super+space for the menu")
+                color: "#555555"
+                font.family: root.metroFont; font.pixelSize: 16
                 elide: Text.ElideRight
               }
             }
@@ -4891,11 +5062,11 @@ Item {
               visible: root.setting("search", "clip")
               Layout.preferredHeight: 20
               Layout.preferredWidth: clipText.implicitWidth + 12
-              radius: 3
-              color: clipMouse.containsMouse ? root.faint : "transparent"
+              radius: 0
+              color: clipMouse.containsMouse ? "#000000" : "transparent"
               border.width: 1
-              border.color: root.dim
-              Text { id: clipText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "CLIP"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 9; font.bold: true }
+              border.color: "#000000"
+              Text { id: clipText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "CLIP"; color: clipMouse.containsMouse ? "#FFFFFF" : "#000000"; font.family: root.metroFont; font.pixelSize: 10; font.weight: Font.DemiBold }
               MouseArea {
                 id: clipMouse
                 anchors.fill: parent
@@ -4927,14 +5098,14 @@ Item {
           readonly property var p: root.mediaPlayer
           // only when the player reports a real length (Firefox often doesn't)
           readonly property bool timed: !!p && p.lengthSupported && p.length > 10 && p.position >= 0 && p.position <= p.length + 1
-          Text { textFormat: Text.PlainText; text: "MEDIA"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+          Text { textFormat: Text.PlainText; text: "now playing"; color: root.dim; font.family: root.metroFont; font.pixelSize: 15 }
           Text { visible: !secMedia.p; textFormat: Text.PlainText; text: "Nothing playing"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
           RowLayout {
             visible: !!secMedia.p
             Layout.fillWidth: true
             spacing: 10
             Rectangle {
-              Layout.preferredWidth: 44; Layout.preferredHeight: 44; radius: 6
+              Layout.preferredWidth: 44; Layout.preferredHeight: 44; radius: 0
               color: root.faint
               clip: true
               Image { anchors.fill: parent; source: secMedia.p ? String(secMedia.p.trackArtUrl || "") : ""; fillMode: Image.PreserveAspectCrop; asynchronous: true }
@@ -4943,9 +5114,9 @@ Item {
               Layout.fillWidth: true
               spacing: 1
               Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: secMedia.p ? String(secMedia.p.trackTitle || secMedia.p.identity || "") : ""
-                color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+                color: root.foreground; font.family: root.metroFont; font.pixelSize: 19; font.weight: Font.Light }
               Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: secMedia.p ? String(secMedia.p.trackArtist || secMedia.p.identity || "") : ""
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
           }
           // progress
@@ -4954,8 +5125,8 @@ Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 14
             readonly property real frac: secMedia.p && secMedia.p.length > 0 ? Math.max(0, Math.min(1, secMedia.p.position / secMedia.p.length)) : 0
-            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 3; radius: 2; color: root.faint }
-            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * parent.frac; height: 3; radius: 2; color: root.foreground }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 3; radius: 0; color: root.faint }
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * parent.frac; height: 3; radius: 0; color: root.accent }
             MouseArea {
               anchors.fill: parent
               enabled: !!secMedia.p && secMedia.p.canSeek
@@ -5001,7 +5172,7 @@ Item {
           spacing: 6
           RowLayout {
             Layout.fillWidth: true
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "NOTIFICATIONS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "notifications"; color: root.dim; font.family: root.metroFont; font.pixelSize: 15 }
             Text {
               textFormat: Text.PlainText; text: root.dnd ? "silenced" : "silence"
               color: dndMouse.containsMouse || root.dnd ? root.foreground : root.dim
@@ -5019,11 +5190,11 @@ Item {
               RowLayout {
                 Layout.fillWidth: true
                 Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; text: String(modelData.summary || modelData.app || "")
-                  color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
+                  color: root.foreground; font.family: root.metroFont; font.pixelSize: 15; font.weight: Font.DemiBold }
                 Text { textFormat: Text.PlainText; text: (root.agoTick, root.agoText(modelData.ts)); color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
               }
               Text { Layout.fillWidth: true; visible: !!modelData.body; textFormat: Text.PlainText; elide: Text.ElideRight; text: String(modelData.body || "").replace(/\s+/g, " ")
-                color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
           }
         }
@@ -5037,7 +5208,7 @@ Item {
           Layout.preferredHeight: 0
           Layout.minimumHeight: 0
           clip: true
-          spacing: 2
+          spacing: 0
           boundsBehavior: Flickable.StopAtBounds
           model: visible ? root.searchRows : []
           currentIndex: root.selectedIndex
@@ -5048,48 +5219,61 @@ Item {
             required property var modelData
             required property int index
             readonly property bool selected: index === root.selectedIndex
+            // Metro: the menu itself is big lowercase type; results while typing are smaller with icons
+            readonly property bool typed: !!root.query
+            readonly property bool isApp: modelData.provider === "apps"
             width: menuList.width
-            height: modelData.detail && root.query ? 40 : 32
+            height: typed ? (modelData.detail ? 50 : 40) : 46
             opacity: modelData.disabled ? 0.45 : 1
 
             Rectangle {
               anchors.fill: parent
-              radius: 6
-              color: mrow.selected ? root.faint : "transparent"
+              radius: 0
+              color: mrow.selected ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22) : "transparent"
             }
+            Rectangle { visible: mrow.selected; width: 4; height: parent.height; color: root.accent }
             RowLayout {
               anchors.fill: parent
-              anchors.leftMargin: 10
-              anchors.rightMargin: 10
+              anchors.leftMargin: 12
+              anchors.rightMargin: 6
               spacing: 10
-              Text {
-                Layout.preferredWidth: 16
-                horizontalAlignment: Text.AlignHCenter
-                textFormat: Text.PlainText
-                text: mrow.modelData.kind === "back" ? "‹" : (mrow.modelData.icon || "")
-                color: mrow.selected ? root.foreground : root.dim
-                font.family: mrow.modelData.iconFont || root.fontFamily
-                font.pixelSize: 13
+              Rectangle {
+                visible: mrow.typed || mrow.modelData.kind === "back"
+                Layout.preferredWidth: mrow.modelData.kind === "back" ? 26 : 32
+                Layout.preferredHeight: Layout.preferredWidth
+                radius: mrow.modelData.kind === "back" ? width / 2 : 0
+                color: mrow.modelData.kind === "back" ? "transparent" : root.accent
+                border.width: mrow.modelData.kind === "back" ? 2 : 0
+                border.color: root.foreground
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: mrow.modelData.kind === "back" ? "‹" : (mrow.modelData.icon || "")
+                  color: root.foreground
+                  font.family: mrow.modelData.kind === "back" ? root.metroFont : (mrow.modelData.iconFont || root.fontFamily)
+                  font.pixelSize: mrow.modelData.kind === "back" ? 18 : 15
+                }
               }
               ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 0
+                spacing: -2
                 Text {
                   Layout.fillWidth: true
                   textFormat: Text.PlainText
-                  text: mrow.modelData.label
-                  color: root.foreground
-                  font.family: root.fontFamily; font.pixelSize: 12
-                  font.bold: mrow.modelData.kind === "back"
+                  text: mrow.isApp && mrow.typed ? String(mrow.modelData.label) : String(mrow.modelData.label).toLowerCase()
+                  color: mrow.selected ? root.foreground : (mrow.typed ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.92))
+                  font.family: root.metroFont
+                  font.pixelSize: mrow.typed ? 19 : 32
+                  font.weight: mrow.typed ? Font.Normal : Font.Light
                   elide: Text.ElideRight
                 }
                 Text {
                   Layout.fillWidth: true
-                  visible: !!mrow.modelData.detail && !!root.query
+                  visible: !!mrow.modelData.detail && mrow.typed
                   textFormat: Text.PlainText
-                  text: mrow.modelData.detail || ""
+                  text: String(mrow.modelData.detail || "").toLowerCase()
                   color: root.dim
-                  font.family: root.fontFamily; font.pixelSize: 9
+                  font.family: root.metroFont; font.pixelSize: 13
                   elide: Text.ElideRight
                 }
               }
@@ -5098,7 +5282,7 @@ Item {
                 textFormat: Text.PlainText
                 text: "›"
                 color: root.dim
-                font.family: root.fontFamily; font.pixelSize: 13
+                font.family: root.metroFont; font.pixelSize: mrow.typed ? 20 : 26; font.weight: Font.Light
               }
             }
             MouseArea {
@@ -5111,17 +5295,141 @@ Item {
           }
         }
 
+        // -- Metro: pinned apps as tiles (the first few medium, the rest small) -----
+        Item {
+          id: pinTiles
+          readonly property var items: root.tilesOn ? win.appRows.filter(function(r) { return r.pinned }) : []
+          visible: root.tilesOn && !(root.searching && root.searchMonitor === win.monitorName) && items.length > 0
+          Layout.fillWidth: true
+          Layout.preferredHeight: rects.length > 0 ? rects.reduce(function(m, r) { return Math.max(m, r.y + r.h) }, 0) : 0
+          readonly property real gap: 6
+          readonly property real unit: (width - gap * 3) / 4
+          // pack: medium (2x2) tiles first, then small (1x1) ones, left to right in a 4-column grid
+          readonly property var rects: {
+            var n = items.length, out = [], used = {}, u = unit, g = gap
+            function free(c, r, w, h) { if (c + w > 4) return false; for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) if (used[(r + j) + ":" + (c + i)]) return false; return true }
+            function take(c, r, w, h) { for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) used[(r + j) + ":" + (c + i)] = true }
+            for (var k = 0; k < n; k++) {
+              var sz = k < root.bigTiles ? 2 : 1, placed = false
+              for (var r = 0; !placed && r < 64; r++) for (var c = 0; !placed && c < 4; c++) {
+                if (free(c, r, sz, sz)) { take(c, r, sz, sz); out.push({ x: c * (u + g), y: r * (u + g), w: sz * u + (sz - 1) * g, h: sz * u + (sz - 1) * g, big: sz > 1 }); placed = true }
+              }
+            }
+            return out
+          }
+          Repeater {
+            model: pinTiles.items
+            Rectangle {
+              id: tile
+              required property var modelData
+              required property int index
+              readonly property var r: pinTiles.rects[index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              readonly property var windows: modelData.windows || []
+              readonly property bool running: windows.length > 0
+              readonly property bool focused: windows.some(function(t) { return t.activated && !root.isMinimized(t) })
+              readonly property bool dropHere: !!win.listDrop && !!win.listDrop.tile && win.listDrop.over === index
+              readonly property int badge: root.setting("apps", "badges") !== false ? root.badgeOf(modelData) : 0
+              x: r.x; y: r.y; width: r.w; height: r.h
+              color: root.accent
+              // pressed tiles give a little, like Metro's tilt
+              scale: tMouse.pressed && !tMouse.dragging ? 0.96 : 1
+              Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
+              border.width: focused || dropHere ? 2 : 0
+              border.color: dropHere ? root.foreground : "#FFFFFF"
+              IconImage {
+                anchors.centerIn: parent
+                anchors.verticalCenterOffset: -6
+                width: tile.r.big ? 44 : 28; height: width
+                source: root.iconFor(tile.modelData.entry && tile.modelData.entry.icon ? tile.modelData.entry.icon : tile.modelData.key)
+                opacity: tile.running && tile.windows.every(function(t) { return root.isMinimized(t) }) ? 0.6 : 1
+              }
+              Text {
+                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                width: parent.width - 16 - (countT.visible ? countT.implicitWidth + 4 : 0)
+                textFormat: Text.PlainText
+                text: root.displayName(tile.modelData).toLowerCase()
+                color: "#FFFFFF"
+                font.family: root.metroFont; font.pixelSize: tile.r.big ? 14 : 11
+                elide: Text.ElideRight
+              }
+              // windows open (several) on medium tiles, bottom right
+              Text {
+                id: countT
+                visible: tile.r.big && tile.windows.length > 1
+                anchors.right: parent.right; anchors.rightMargin: 8
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                textFormat: Text.PlainText; text: tile.windows.length
+                color: "#FFFFFF"; font.family: root.metroFont; font.pixelSize: 14
+              }
+              // unread count from the window title, top right
+              Text {
+                visible: tile.badge > 0
+                anchors.right: parent.right; anchors.rightMargin: 7
+                anchors.top: parent.top; anchors.topMargin: 3
+                textFormat: Text.PlainText; text: tile.badge > 99 ? "99+" : String(tile.badge)
+                color: "#FFFFFF"; font.family: root.metroFont; font.pixelSize: tile.r.big ? 22 : 14; font.weight: Font.Light
+              }
+              // running: a short bar under the tile's bottom-left corner
+              Rectangle { visible: tile.running && !tile.focused; x: 0; y: parent.height - 3; width: 14; height: 3; color: "#FFFFFF"; opacity: 0.85 }
+              MouseArea {
+                id: tMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+                cursorShape: dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                preventStealing: true
+                property real pressX: 0
+                property real pressY: 0
+                property bool dragging: false
+                property bool dragged: false
+                onPressed: function(mouse) { pressX = mouse.x; pressY = mouse.y; dragged = false }
+                onPositionChanged: function(mouse) {
+                  if (!(pressedButtons & Qt.LeftButton)) return
+                  var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                  if (!dragging && Math.abs(mouse.x - pressX) + Math.abs(mouse.y - pressY) > 12) {
+                    dragging = true; dragged = true
+                    win.beginDrag(tile.modelData)
+                  }
+                  if (dragging) win.updateDrag(p.x, p.y)
+                }
+                onReleased: function(mouse) {
+                  if (!dragging) return
+                  dragging = false
+                  var p = mapToItem(win.contentItem, mouse.x, mouse.y)
+                  win.endDrag(p.x, p.y)
+                }
+                onCanceled: if (dragging) { dragging = false; win.dragItem = null }
+                onClicked: function(mouse) {
+                  if (dragged) { dragged = false; return }
+                  if (mouse.button === Qt.RightButton) win.openAppMenu(tile.modelData, tile)
+                  else if (mouse.button === Qt.MiddleButton) { var nl = root.launchCommandFor(tile.modelData); if (nl) root.run(nl) }
+                  else root.activateApp(tile.modelData, root.shiftHeld || (mouse.modifiers & Qt.ShiftModifier) !== 0)
+                }
+              }
+            }
+          }
+        }
+        Text {
+          id: runHeader
+          visible: root.tilesOn && appList.visible && appList.count > 0
+          textFormat: Text.PlainText
+          text: "running"
+          color: root.dim
+          font.family: root.metroFont; font.pixelSize: 15
+          Layout.bottomMargin: -6
+        }
+
         // -- apps: pinned first, then anything else that is running ---------------
         ListView {
           id: appList
           // insertion line while dragging an app within the sidebar
           Rectangle {
-            visible: !!win.listDrop && !!win.dragItem
+            visible: !!win.listDrop && !!win.dragItem && !win.listDrop.tile && !win.listDrop.unpin
             z: 10
             x: 6
             width: appList.width - 12
             height: 2
-            radius: 1
+            radius: 0
             y: win.listDrop ? win.listDrop.y - appList.contentY : 0
             color: root.urgent
           }
@@ -5134,7 +5442,7 @@ Item {
           clip: true
           spacing: 2
           boundsBehavior: Flickable.StopAtBounds
-          model: root.appItems(win.monitorName)
+          model: root.tilesOn ? win.appRows.filter(function(r) { return !r.pinned && !r.separator }) : win.appRows
 
           delegate: Item {
             id: row
@@ -5157,22 +5465,22 @@ Item {
 
               Rectangle {
                 anchors.fill: parent
-                radius: 6
-                color: win.springKey === "a:" + row.modelData.key ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
-                     : row.focused ? root.faint : (rowMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+                radius: 0
+                color: win.springKey === "a:" + row.modelData.key ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3)
+                     : row.focused ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18) : (rowMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
               }
               // focused: accent bar on the sidebar edge; running: small dot
               Rectangle {
                 visible: row.focused && root.setting("apps", "indicator") === "bar"
-                width: 3; height: 18; radius: 2
+                width: 4; height: parent.height; radius: 0
                 anchors.verticalCenter: parent.verticalCenter
                 x: 0
-                color: root.urgent
+                color: root.accent
               }
               Rectangle {
                 readonly property bool allHidden: row.windows.every(function(t) { return root.isMinimized(t) })
                 visible: row.running && (!row.focused || root.setting("apps", "indicator") === "dot") && root.setting("apps", "indicator") !== "none"
-                width: 5; height: 5; radius: 2.5
+                width: 5; height: 5; radius: 0
                 anchors.verticalCenter: parent.verticalCenter
                 x: 0
                 color: allHidden ? "transparent" : root.dim
@@ -5184,12 +5492,18 @@ Item {
                 anchors.leftMargin: 14
                 anchors.rightMargin: 8
                 spacing: 10
-                IconImage {
+                // Metro: the icon on a square tile (accent when pinned)
+                Rectangle {
                   visible: root.setting("apps", "icons") === true
-                  Layout.preferredWidth: 18
-                  Layout.preferredHeight: 18
-                  source: visible ? root.iconFor(row.entry && row.entry.icon ? row.entry.icon : row.modelData.key) : ""
-                  opacity: row.running ? 1 : 0.7
+                  Layout.preferredWidth: root.rowH - 10
+                  Layout.preferredHeight: root.rowH - 10
+                  color: row.modelData.pinned ? root.accent : root.tileGround
+                  IconImage {
+                    anchors.centerIn: parent
+                    width: Math.round(parent.width * 0.62); height: width
+                    source: parent.visible ? root.iconFor(row.entry && row.entry.icon ? row.entry.icon : row.modelData.key) : ""
+                    opacity: row.running ? 1 : 0.7
+                  }
                 }
                 ColumnLayout {
                   Layout.fillWidth: true
@@ -5197,9 +5511,9 @@ Item {
                   Text {
                     Layout.fillWidth: true
                     textFormat: Text.PlainText
-                    text: root.displayName(row.modelData)
+                    text: root.displayName(row.modelData).toLowerCase()
                     color: row.running ? root.foreground : root.dim
-                    font.family: root.fontFamily; font.pixelSize: 12; font.bold: row.focused
+                    font.family: root.metroFont; font.pixelSize: 19; font.weight: row.focused ? Font.Normal : Font.Light
                     elide: Text.ElideRight
                   }
                   // what the app is showing (window title), as a hint
@@ -5220,7 +5534,7 @@ Item {
                       textFormat: Text.PlainText
                       text: hintBox.hint
                       color: root.dim
-                      font.family: root.fontFamily; font.pixelSize: 10
+                      font.family: root.metroFont; font.pixelSize: 12
                       elide: hintBox.sliding ? Text.ElideNone : Text.ElideRight
                       maximumLineCount: 1
                     }
@@ -5242,9 +5556,9 @@ Item {
                   visible: n > 0
                   Layout.preferredWidth: Math.max(16, badgeText.implicitWidth + 8)
                   Layout.preferredHeight: 16
-                  radius: 8
-                  color: root.foreground
-                  Text { id: badgeText; anchors.centerIn: parent; textFormat: Text.PlainText; text: parent.n > 99 ? "99+" : String(parent.n); color: root.background; font.family: root.fontFamily; font.pixelSize: 9; font.bold: true }
+                  radius: 0
+                  color: root.accent
+                  Text { id: badgeText; anchors.centerIn: parent; textFormat: Text.PlainText; text: parent.n > 99 ? "99+" : String(parent.n); color: "#FFFFFF"; font.family: root.metroFont; font.pixelSize: 11 }
                 }
                 Text {
                   readonly property var wsIds: (row.windows || []).filter(function(t) { return t.workspace && t.workspace.id > 0 }).map(function(t) { return t.workspace.id })
@@ -5259,7 +5573,7 @@ Item {
                   visible: row.multi
                   Layout.preferredWidth: countText.implicitWidth + 12
                   Layout.preferredHeight: 20
-                  radius: 4
+                  radius: 0
                   color: countMouse.containsMouse || row.expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10) : "transparent"
                   Text {
                     id: countText
@@ -5336,7 +5650,7 @@ Item {
                   Rectangle {
                     anchors.fill: parent
                     anchors.leftMargin: 14
-                    radius: 5
+                    radius: 0
                     color: win.springKey === "w:" + root.addrOf(wrow.modelData) ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.18)
                          : wrow.front ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
                          : (wMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
@@ -5344,13 +5658,13 @@ Item {
                   // same indicators as apps: bar = in front, dot = open, ring = minimized
                   Rectangle {
                     visible: wrow.front
-                    x: 14; width: 2; height: 14; radius: 1
+                    x: 14; width: 2; height: 14; radius: 0
                     anchors.verticalCenter: parent.verticalCenter
                     color: root.urgent
                   }
                   Rectangle {
                     visible: !wrow.front
-                    x: 15; width: 4; height: 4; radius: 2
+                    x: 15; width: 4; height: 4; radius: 0
                     anchors.verticalCenter: parent.verticalCenter
                     color: wrow.hidden ? "transparent" : root.dim
                     border.width: wrow.hidden ? 1 : 0
@@ -5498,7 +5812,7 @@ Item {
             visible: !root.trayMenuSub && !!root.trayMenuItem && !root.trayMenuItem.onlyMenu
             Layout.fillWidth: true
             Layout.preferredHeight: visible ? 30 : 0
-            radius: 6
+            radius: 0
             color: openMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
             Text {
               anchors.verticalCenter: parent.verticalCenter
@@ -5536,7 +5850,7 @@ Item {
               Rectangle {
                 visible: !tRow.sep
                 anchors.fill: parent
-                radius: 6
+                radius: 0
                 color: tMouse.containsMouse && tRow.modelData.enabled ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
                 opacity: tRow.modelData.enabled ? 1 : 0.4
                 RowLayout {
@@ -5576,21 +5890,26 @@ Item {
           property string status: ""
           readonly property bool expanded: root.qsSection === sectionId
           Layout.fillWidth: true
-          implicitHeight: 34
-          radius: 6
+          implicitHeight: sh.status !== "" ? 52 : 40
+          radius: 0
           color: shMouse.containsMouse && !expanded ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
+          Rectangle { visible: sh.expanded; width: 4; height: parent.height; color: root.accent }
           RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 6
-            anchors.rightMargin: 6
+            anchors.leftMargin: 10
+            anchors.rightMargin: 4
             spacing: 10
-            Text { Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: sh.icon; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: sh.expanded }
-            Text { textFormat: Text.PlainText; text: sh.status; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 110 }
-            Text { textFormat: Text.PlainText; text: sh.expanded ? "˅" : "›"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: -2
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.label.toLowerCase(); color: root.foreground; font.family: root.metroFont; font.pixelSize: 22; font.weight: Font.Light; elide: Text.ElideRight }
+              Text { visible: sh.status !== ""; Layout.fillWidth: true; textFormat: Text.PlainText; text: sh.status.toLowerCase(); color: root.dim; font.family: root.metroFont; font.pixelSize: 13; elide: Text.ElideRight }
+            }
+            Text { textFormat: Text.PlainText; text: sh.expanded ? "˅" : "›"; color: root.dim; font.family: root.metroFont; font.pixelSize: 22; font.weight: Font.Light }
           }
           MouseArea { id: shMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleSection(sh.sectionId) }
         }
+        // Windows Phone toggle switch: a square track with a block thumb
         component SwitchRow: Item {
           id: sw
           property string label: ""
@@ -5598,18 +5917,28 @@ Item {
           property bool on: false
           signal toggled()
           Layout.fillWidth: true
-          implicitHeight: 28
+          implicitHeight: 34
           RowLayout {
             anchors.fill: parent
             spacing: 8
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sw.label; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
-            Text { visible: sw.hint !== ""; textFormat: Text.PlainText; text: sw.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 120 }
-            Rectangle {
-              Layout.preferredWidth: 30; Layout.preferredHeight: 16; radius: 8
-              color: sw.on ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
-              Rectangle { width: 12; height: 12; radius: 6; anchors.verticalCenter: parent.verticalCenter; x: sw.on ? parent.width - width - 2 : 2
-                color: sw.on ? root.background : root.dim
-                Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } } }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: sw.label.toLowerCase(); color: root.foreground; font.family: root.metroFont; font.pixelSize: 16; elide: Text.ElideRight }
+            Text { visible: sw.hint !== ""; textFormat: Text.PlainText; text: sw.hint; color: root.dim; font.family: root.metroFont; font.pixelSize: 12; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+            Item {
+              Layout.preferredWidth: 52; Layout.preferredHeight: 24
+              Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 2
+                border.color: root.foreground
+                Rectangle { x: 4; y: 4; height: parent.height - 8; width: sw.on ? parent.width - 8 - 8 : 0; color: root.accent
+                  Behavior on width { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } } }
+              }
+              Rectangle {
+                width: 10; height: 30; y: -3
+                x: sw.on ? parent.width - width : 0
+                color: root.foreground
+                Behavior on x { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
+              }
             }
           }
           MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: sw.toggled() }
@@ -5622,19 +5951,19 @@ Item {
           signal moved(real v)
           signal muteClicked()
           Layout.fillWidth: true
-          implicitHeight: 24
+          implicitHeight: 30
           RowLayout {
             anchors.fill: parent
             spacing: 8
-            Text { Layout.preferredWidth: 26; textFormat: Text.PlainText; text: sl.label; color: sl.muted ? root.urgent : root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            Text { Layout.preferredWidth: 34; textFormat: Text.PlainText; text: sl.label.toLowerCase(); color: sl.muted ? root.accent : root.dim; font.family: root.metroFont; font.pixelSize: 13
               MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: Qt.PointingHandCursor; onClicked: sl.muteClicked() } }
             Item {
               id: track
               Layout.fillWidth: true
-              Layout.preferredHeight: 18
-              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 4; radius: 2; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16) }
-              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * Math.max(0, Math.min(1, sl.value)); height: 4; radius: 2; color: sl.muted ? root.dim : root.foreground }
-              Rectangle { anchors.verticalCenter: parent.verticalCenter; x: parent.width * Math.max(0, Math.min(1, sl.value)) - 6; width: 12; height: 12; radius: 6; color: sl.muted ? root.dim : root.foreground }
+              Layout.preferredHeight: 24
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 10; radius: 0; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2) }
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * Math.max(0, Math.min(1, sl.value)); height: 10; radius: 0; color: sl.muted ? root.dim : root.accent }
+              Rectangle { anchors.verticalCenter: parent.verticalCenter; x: parent.width * Math.max(0, Math.min(1, sl.value)) - 4; width: 8; height: 24; radius: 0; color: root.foreground }
               MouseArea {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
@@ -5644,7 +5973,7 @@ Item {
                 onWheel: function(w) { sl.moved(Math.max(0, Math.min(1, sl.value + (w.angleDelta.y > 0 ? 0.05 : -0.05)))) }
               }
             }
-            Text { Layout.preferredWidth: 30; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : Math.round(sl.value * 100) + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+            Text { Layout.preferredWidth: 36; horizontalAlignment: Text.AlignRight; textFormat: Text.PlainText; text: sl.muted ? "mute" : Math.round(sl.value * 100); color: root.dim; font.family: root.metroFont; font.pixelSize: 14 }
           }
         }
         component ChoiceRow: Rectangle {
@@ -5654,17 +5983,17 @@ Item {
           property bool selected: false
           signal chosen()
           Layout.fillWidth: true
-          implicitHeight: 26
-          radius: 5
-          color: selected ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : (chMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
+          implicitHeight: 32
+          radius: 0
+          color: chMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
           RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 8
-            anchors.rightMargin: 8
-            spacing: 8
-            Rectangle { Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: ch.selected ? root.foreground : "transparent"; border.width: ch.selected ? 0 : 1; border.color: root.dim }
-            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 11; elide: Text.ElideRight }
-            Text { visible: ch.hint !== ""; textFormat: Text.PlainText; text: ch.hint; color: root.dim; font.family: root.fontFamily; font.pixelSize: 9 }
+            anchors.leftMargin: 4
+            anchors.rightMargin: 4
+            spacing: 10
+            Rectangle { Layout.preferredWidth: 14; Layout.preferredHeight: 14; radius: 0; color: ch.selected ? root.accent : "transparent"; border.width: 2; border.color: ch.selected ? root.accent : root.dim }
+            Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: ch.label; color: ch.selected ? root.foreground : root.dim; font.family: root.metroFont; font.pixelSize: 15; elide: Text.ElideRight }
+            Text { visible: ch.hint !== ""; textFormat: Text.PlainText; text: ch.hint; color: root.dim; font.family: root.metroFont; font.pixelSize: 12 }
           }
           MouseArea { id: chMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: ch.chosen() }
         }
@@ -5673,17 +6002,18 @@ Item {
           property string label: ""
           signal activated()
           Layout.fillWidth: true
-          implicitHeight: 24
-          Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: lk.label + " ›"; color: lkMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+          implicitHeight: 28
+          Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: lk.label.toLowerCase() + "  ›"; color: lkMouse.containsMouse ? root.foreground : root.accentText; font.family: root.metroFont; font.pixelSize: 14 }
           MouseArea { id: lkMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: lk.activated() }
         }
         component SectionBody: Rectangle {
           default property alias content: bodyColumn.data
           Layout.fillWidth: true
-          implicitHeight: bodyColumn.implicitHeight + 20
-          radius: 8
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
-          ColumnLayout { id: bodyColumn; anchors.fill: parent; anchors.margins: 10; spacing: 6 }
+          implicitHeight: bodyColumn.implicitHeight + 16
+          radius: 0
+          color: "transparent"
+          Rectangle { width: 4; height: parent.height; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5) }
+          ColumnLayout { id: bodyColumn; anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 4; anchors.topMargin: 6; anchors.bottomMargin: 10; spacing: 8 }
         }
 
 
@@ -5741,7 +6071,7 @@ Item {
         Item {
           id: secBottom
           Layout.fillWidth: true
-          Layout.preferredHeight: 28
+          Layout.preferredHeight: 38
 
           Flow {
             // Omarchy's widgets, kept loaded but hidden so their full panels
@@ -5794,37 +6124,48 @@ Item {
           RowLayout {
             anchors.fill: parent
             spacing: 6
-            Rectangle {
-              Layout.preferredWidth: 28
-              Layout.preferredHeight: 28
-              radius: 6
-              color: win.qsHere ? root.faint : (gearMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent")
-              // The sidebar's own icon, first among the plugins: a gear cut
-              // down the middle with its left half gone (a panel's edge).
-              Item {
-                id: sideIcon
-                // as bright as the plugin icons beside it
-                readonly property color tint: root.foreground
-                readonly property real cx: 6          // where the cut is
-                anchors.centerIn: parent
-                width: 20; height: 20
-                Item {
-                  x: sideIcon.cx; width: parent.width - sideIcon.cx; height: parent.height
-                  clip: true
-                  Shape {
-                    x: -sideIcon.cx; width: 20; height: 20
-                    preferredRendererType: Shape.CurveRenderer
-                    ShapePath {
-                      fillColor: sideIcon.tint
-                      strokeColor: "transparent"
-                      fillRule: ShapePath.OddEvenFill
-                      PathSvg { path: root.gearPath(sideIcon.cx, 10, 8.5, 6.3, 2.8, 8) }
-                    }
+            // Metro app bar: round outlined buttons. Settings (quick settings) first,
+            // then straight-to-section shortcuts while the column is wide enough.
+            Repeater {
+              model: [["\uf013", "settings", "Settings"], ["\uf1eb", "network", "Network"], ["\uf028", "sound", "Sound"],
+                      ["\uf293", "bluetooth", "Bluetooth"], ["\uf011", "power", "Power"]]
+                     .filter(function(b, i) { return i === 0 || root.sidebarWidth >= 300 })
+              Rectangle {
+                id: abBtn
+                required property var modelData
+                required property int index
+                readonly property bool on: index === 0 ? win.qsHere : (win.qsHere && root.qsSection === modelData[1])
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                Layout.leftMargin: index === 0 ? 2 : 4
+                radius: width / 2
+                color: on ? root.foreground : (abMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent")
+                border.width: 2
+                border.color: root.foreground
+                scale: abMouse.pressed ? 0.94 : 1
+                Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: abBtn.modelData[0]
+                  color: abBtn.on ? root.background : root.foreground
+                  font.family: root.fontFamily; font.pixelSize: 14
+                }
+                MouseArea {
+                  id: abMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onEntered: tooltip.show(abBtn, abBtn.modelData[2])
+                  onExited: tooltip.hide(abBtn)
+                  onClicked: {
+                    tooltip.hide(abBtn)
+                    if (abBtn.index === 0) root.toggleQuickSettings(win.monitorName)
+                    else if (win.qsHere && root.qsSection === abBtn.modelData[1]) root.closeQuickSettings()
+                    else root.openSettings(abBtn.modelData[1], win.monitorName)
                   }
                 }
-                Rectangle { x: sideIcon.cx - 1; y: 0.5; width: 2; height: 19; radius: 1; color: sideIcon.tint }
               }
-              MouseArea { id: gearMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleQuickSettings(win.monitorName) }
             }
             Item { Layout.fillWidth: true }
             // plugin widgets, in cells the size of tray icons
@@ -5927,6 +6268,54 @@ Item {
               visible: root.qsPage === ""
               Layout.fillWidth: true
               spacing: 2
+
+              // Metro quick actions: square tiles, accent when on
+              GridLayout {
+                Layout.fillWidth: true
+                Layout.bottomMargin: 8
+                columns: 4
+                columnSpacing: 6
+                rowSpacing: 8
+                Repeater {
+                  model: [
+                    ["\uf1eb", "wi-fi", "wifi", root.qsState.wifi],
+                    ["\uf293", "bluetooth", "bt", !!root.btAdapter && root.btAdapter.enabled],
+                    ["\uf186", "quiet", "dnd", root.dnd],
+                    ["\uf185", "night light", "night", root.qsState.night],
+                    ["\uf0f4", "stay awake", "idle", root.qsState.idle],
+                    ["\uf0e7", root.profileLabel(root.qsState.profile).toLowerCase() || "power", "profile", root.qsState.profile === "performance"],
+                    ["\uf030", "capture", "capture", false],
+                    ["\uf023", "lock", "lock", false]
+                  ]
+                  ColumnLayout {
+                    id: qt
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    spacing: 4
+                    Rectangle {
+                      Layout.fillWidth: true
+                      Layout.preferredHeight: width
+                      color: qt.modelData[3] ? root.accent : (qtMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.22) : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14))
+                      scale: qtMouse.pressed ? 0.95 : 1
+                      Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
+                      Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: qt.modelData[0]; color: "#FFFFFF"; font.family: root.fontFamily; font.pixelSize: 20 }
+                      MouseArea {
+                        id: qtMouse
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var k = qt.modelData[2]
+                          if (k === "capture") root.systemAction("omarchy-capture-screenshot")
+                          else if (k === "lock") root.systemAction("omarchy-system-lock")
+                          else root.qsToggle(k)
+                        }
+                      }
+                    }
+                    Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: qt.modelData[1]; color: root.foreground; font.family: root.metroFont; font.pixelSize: 12; elide: Text.ElideRight }
+                  }
+                }
+              }
 
               // Network
               SectionHeader { sectionId: "network"; icon: ""; label: "Network"
@@ -6044,7 +6433,7 @@ Item {
                       readonly property bool sel: root.qsState.profile === modelData[0]
                       Layout.fillWidth: true
                       Layout.preferredHeight: 26
-                      radius: 5
+                      radius: 0
                       color: sel ? root.foreground : (pMouse.containsMouse ? root.faint : "transparent")
                       border.width: sel ? 0 : 1
                       border.color: root.faint
@@ -6064,7 +6453,7 @@ Item {
                       required property var modelData
                       Layout.fillWidth: true
                       Layout.preferredHeight: 40
-                      radius: 6
+                      radius: 0
                       color: sMouse.containsMouse ? root.faint : "transparent"
                       Column {
                         anchors.centerIn: parent
@@ -6085,7 +6474,7 @@ Item {
               property string title: ""
               Layout.fillWidth: true
               implicitHeight: 32
-              radius: 6
+              radius: 0
               color: phMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
               Text { anchors.verticalCenter: parent.verticalCenter; x: 6; textFormat: Text.PlainText; text: "‹  " + ph.title; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
               MouseArea { id: phMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsPage = "" }
@@ -6110,7 +6499,7 @@ Item {
                   readonly property bool sel: seg.current === modelData[0]
                   Layout.fillWidth: true
                   Layout.preferredHeight: 26
-                  radius: 5
+                  radius: 0
                   color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
                   border.width: sel ? 0 : 1
                   border.color: root.faint
@@ -6153,7 +6542,7 @@ Item {
                       visible: root.pwSsid === wrow.modelData.name
                       Layout.fillWidth: true
                       Layout.preferredHeight: 28
-                      radius: 5
+                      radius: 0
                       color: "transparent"
                       border.width: 1
                       border.color: root.dim
@@ -6306,7 +6695,7 @@ Item {
                     model: [["−", -1], ["+", 1]]
                     Rectangle {
                       required property var modelData
-                      Layout.preferredWidth: 30; Layout.preferredHeight: 26; radius: 5
+                      Layout.preferredWidth: 30; Layout.preferredHeight: 26; radius: 0
                       color: tsMouse.containsMouse ? root.faint : "transparent"
                       border.width: 1; border.color: root.faint
                       Text { anchors.centerIn: parent; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
@@ -6335,15 +6724,15 @@ Item {
                   required property int index
                   Layout.fillWidth: true
                   Layout.preferredWidth: 1
-                  implicitHeight: 28
-                  radius: 6
+                  implicitHeight: 36
+                  radius: 0
                   color: qsBtnMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
                                                   : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
                   Row {
                     anchors.centerIn: parent
                     spacing: 6
-                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.icon; color: root.dim; font.family: root.fontFamily; font.pixelSize: 11 }
-                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.label; color: qsBtnMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.icon; color: root.dim; font.family: root.fontFamily; font.pixelSize: 12 }
+                    Text { anchors.verticalCenter: parent.verticalCenter; textFormat: Text.PlainText; text: qsBtn.modelData.label.toLowerCase(); color: qsBtnMouse.containsMouse ? root.foreground : root.dim; font.family: root.metroFont; font.pixelSize: 15 }
                   }
                   MouseArea {
                     id: qsBtnMouse
@@ -6361,13 +6750,14 @@ Item {
 
             Rectangle {
               id: updBtn
-              visible: root.qsPage === ""
+              // a local copy with nowhere to check (no git remote) shows nothing here
+              visible: root.qsPage === "" && root.updateCount !== "?"
               readonly property bool ready: Number(root.updateCount) > 0 && !root.updating
               readonly property bool busy: root.updating || root.updateCount === ""
               Layout.fillWidth: true
               implicitHeight: 28
-              radius: 6
-              color: updBtn.ready ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, updMouse.containsMouse ? 0.3 : 0.18)
+              radius: 0
+              color: updBtn.ready ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, updMouse.containsMouse ? 0.9 : 0.7)
                      : updMouse.containsMouse && !updBtn.busy ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
                      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
               Row {
@@ -6388,7 +6778,7 @@ Item {
                         : root.updateCount === "?" ? "Can\u2019t check for updates"
                         : "Update rice \u00b7 " + root.updateCount + " new"
                   color: updBtn.ready || updMouse.containsMouse ? root.foreground : root.dim
-                  font.family: root.fontFamily; font.pixelSize: 10; font.bold: updBtn.ready
+                  font.family: root.metroFont; font.pixelSize: 14
                 }
               }
               MouseArea {
