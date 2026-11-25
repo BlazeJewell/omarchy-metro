@@ -2096,10 +2096,20 @@ Item {
     root.editHistory = []
     root.profileNaming = false
     root.editing = true
+    edSlide.y = win.screen.height    // slide up into place
+    edSlideAnim.from = win.screen.height; edSlideAnim.to = 0; edSlideAnim.start()
   }
   property var editSnapshot: ({})
-  function saveEditing() { root.editing = false; root.writeSettings() }
-  function cancelEditing() { root.editing = false; root.userSettings = root.editSnapshot }
+  // the editor slides down before the window goes away; guard re-entry mid-slide
+  property bool edClosing: false
+  function closeEditor(save) {
+    if (root.edClosing) return
+    root.edClosing = true
+    if (save) root.writeSettings(); else root.userSettings = root.editSnapshot
+    edSlideAnim.from = edSlide.y; edSlideAnim.to = win.screen.height; edSlideAnim.start()
+  }
+  function saveEditing() { root.closeEditor(true) }
+  function cancelEditing() { root.closeEditor(false) }
   function stopEditing() { root.cancelEditing() }
 
   // ---- widget sections: a widget's panel, kept open as a section of its own ----
@@ -4173,6 +4183,15 @@ Item {
         font.capitalization: Font.AllLowercase
       }
 
+      NumberAnimation {
+        id: edSlideAnim
+        target: edSlide
+        property: "y"
+        duration: 240
+        easing.type: Easing.InOutCubic
+        onFinished: { if (root.edClosing) { root.editing = false; root.edClosing = false } }
+      }
+
       PanelWindow {
         id: editorWin
         screen: win.screen
@@ -4186,10 +4205,14 @@ Item {
         WlrLayershell.namespace: "jake-metro-editor"
         WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
-        Rectangle {
+        Item {
           anchors.fill: parent
-          color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
-          Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
+          clip: true
+          Rectangle {
+            id: edSlide
+            width: parent.width; height: parent.height
+            color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
+            Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
           Rectangle { width: 1; height: parent.height; color: root.faint }
 
           // the page scrolls; the round app bar stays at the bottom
@@ -4907,6 +4930,7 @@ Item {
               }
             }
           }
+        }
         }
       }
 
