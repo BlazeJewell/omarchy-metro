@@ -9,6 +9,18 @@ notifications inside it, editing and profiles.
 
 Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 
+## Widgets and tiles
+
+The column is made of two kinds of things:
+
+- **Widgets**: the blocks down the column — clock, status, search, workspaces, running apps,
+  notifications, now playing, tray, the bottom row, and any plugin panel added as a widget.
+  Move, hide and set them up in Edit sidebar; add more with `+`.
+- **Tiles**: everything in the tile grid — **system tiles** (cpu, memory, disk, gpu, network),
+  **app tiles** (your pinned apps) and **plugin tiles** (a plugin's widget, live). Each can be
+  off, small, medium or wide (Edit sidebar › tiles). Click a system tile for btop, an app tile
+  to open the app, a plugin tile for its panel; right-click any tile to edit the tiles.
+
 ## What's Metro about it
 
 | Part | Metro look |

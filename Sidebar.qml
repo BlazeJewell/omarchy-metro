@@ -1839,12 +1839,12 @@ Item {
   readonly property var settingsDefaults: ({
     clock: { show: true, h24: true, date: true, seconds: false, calendar: true },
     status: { show: true, indicators: true, indicatorItems: [], indicatorsAlways: false, update: true, keyboard: true, battery: true },
-    system: { show: true, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, netGraph: true, refresh: 2 },
+    system: { show: false, cpu: true, mem: true, disk: true, gpu: true, vram: false, gpuTemp: false, network: true, netGraph: true, refresh: 2 },
     workspaces: { show: true, count: 5, style: "numbers", scroll: true },
     media: { show: false, idle: true },
     notifications: { show: false, count: 4 },
     search: { show: true, clip: true, dim: true },
-    apps: { running: true, group: true, compact: false, indicator: "bar", icons: true, badges: true, workspace: false, hints: true, hintSymbols: true, tiles: true, bigTiles: 2 },
+    apps: { running: true, group: true, compact: false, indicator: "bar", icons: true, badges: true, workspace: false, hints: true, hintSymbols: true, tiles: true, bigTiles: 2, systemTiles: { cpu: "small", mem: "small", disk: "small", gpu: "small", net: "medium" } },
     bottom: { plugins: true },
     tray: { show: true, align: "right" },
     general: { background: "solid", autohide: false, autohideMode: "float", autohideEdge: "show", windowRounding: 0, windowBorder: 0, lookScope: "windows", accent: "#0050EF", panelColor: "black" }
@@ -2015,6 +2015,30 @@ Item {
   readonly property var widgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
   readonly property var widgetTiles: root.allPluginEntries.filter(function(e) { var z = root.widgetTileMap[e.id]; return z === "small" || z === "medium" || z === "wide" })
                                        .map(function(e) { return { id: String(e.id), size: root.widgetTileMap[e.id], entry: e } })
+  // system performance as tiles: { cpu|mem|disk|gpu|vram|temp|net: "small" | "medium" | "wide" }
+  readonly property var systemTileKeys: [["cpu", "cpu"], ["mem", "memory"], ["disk", "disk"], ["gpu", "gpu"], ["vram", "gpu memory"], ["temp", "gpu temperature"], ["net", "network"]]
+  readonly property var systemTileMap: { var m = root.setting("apps", "systemTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
+  readonly property var systemTiles: root.systemTileKeys.filter(function(k) {
+      var z = root.systemTileMap[k[0]]
+      return (z === "small" || z === "medium" || z === "wide") && (["gpu", "vram", "temp"].indexOf(k[0]) === -1 || root.gpuFound)
+    }).map(function(k) { return { key: k[0], size: root.systemTileMap[k[0]] } })
+  function setSystemTile(key, size) {
+    var m = Object.assign({}, root.systemTileMap)
+    m[key] = size
+    root.setSetting("apps", "systemTiles", m)
+  }
+  // what a system tile shows: a big number, its unit, a label, an optional second line and graph
+  function sysTileData(key) {
+    if (key === "net") {
+      var d = root.rateParts(root.rxRate), u = root.rateParts(root.txRate)
+      return { v: d[0], unit: String(d[1]).toLowerCase(), label: "network", l2: "↓ down · ↑ " + u[0] + " " + String(u[1]).toLowerCase(), hist: root.rxHistory, hot: false }
+    }
+    var v = key === "cpu" ? root.cpu : key === "mem" ? root.mem : key === "disk" ? root.disk : key === "gpu" ? root.gpu
+          : key === "vram" ? (root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0) : root.gpuTemp
+    var label = { cpu: "cpu", mem: "memory", disk: "disk", gpu: "gpu", vram: "gpu memory", temp: "gpu temp" }[key]
+    var l2 = key === "mem" ? "" : key === "vram" ? Math.round(root.vramUsed / 1024 * 10) / 10 + " of " + Math.round(root.vramTotal / 1024) + " gb" : ""
+    return { v: Math.round(v), unit: key === "temp" ? "°" : "%", label: label, l2: l2, hist: null, hot: key !== "temp" && v >= 85 }
+  }
   function setWidgetTile(id, size) {
     var m = Object.assign({}, root.widgetTileMap)
     if (size === "off") delete m[id]; else m[id] = size
@@ -2052,7 +2076,7 @@ Item {
   readonly property var editSections: [
     { id: "clock", label: "CLOCK" }, { id: "status", label: "STATUS" }, { id: "system", label: "SYSTEM" }, { id: "workspaces", label: "WORKSPACES" },
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
-    { id: "apps", label: "TILES" }, { id: "running", label: "RUNNING" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
+    { id: "apps", label: "TILES" }, { id: "running", label: "RUNNING APPS" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
   function startEditing(monitorName) {
     root.closeOverview()     // it covers the window area, where the editor opens
@@ -2192,7 +2216,7 @@ Item {
     function match(text) { text = String(text).toLowerCase(); return terms.every(function(t) { return text.indexOf(t) >= 0 }) }
     // built-in sections that are off (widget sections that are off go with their kind below)
     var hidden = root.editSections.filter(function(e) { return e.id.indexOf("w:") !== 0 && root.setting(e.id, "show") === false })
-      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Section" } })
+      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Widget" } })
     var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : {}
     var omarchy = [], plugins = []
     root.embeddableWidgets.forEach(function(id) {
@@ -2218,7 +2242,7 @@ Item {
       out.push({ kind: "header", name: title + " · " + rows.length })
       rows.forEach(function(r) { out.push(r) })
     }
-    group("SECTIONS", hidden)
+    group("WIDGETS", hidden)
     group("OMARCHY", omarchy)
     group("PLUGINS", plugins)
     return out
@@ -2652,9 +2676,9 @@ Item {
         if (!root.tilesOn || x >= root.sidebarWidth || !pinTiles.visible) return null
         var p = pinTiles.mapFromItem(win.contentItem, x, y)
         if (p.x < -6 || p.y < -10 || p.x > pinTiles.width + 6 || p.y > pinTiles.height + 10) return null
-        var rects = pinTiles.rects, n = pinTiles.appCount
+        var rects = pinTiles.rects, n = pinTiles.appCount, o = pinTiles.appOffset
         for (var i = 0; i < n; i++) {
-          var r = rects[i]
+          var r = rects[o + i]
           if (p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h)
             return { index: p.x < r.x + r.w / 2 ? i : i + 1, y: r.y, tile: true, over: i }
         }
@@ -4157,7 +4181,7 @@ Item {
               Repeater {
                 // like a Windows Phone pivot: the current tab comes first, the rest follow it round
                 model: {
-                  var t = [["section", "this section"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
+                  var t = [["section", root.editSection === "apps" ? "tiles" : "this widget"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
                   var i = Math.max(0, t.map(function(x) { return x[0] }).indexOf(root.editTab))
                   return t.slice(i).concat(t.slice(0, i))
                 }
@@ -4264,7 +4288,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !parent.text
                     textFormat: Text.PlainText
-                    text: "search sections and plugins"
+                    text: "search widgets and plugins"
                     color: "#555555"; font.family: root.metroFont; font.pixelSize: 16
                   }
                 }
@@ -4427,13 +4451,26 @@ Item {
               Layout.fillWidth: true
               spacing: 6
               EdHeading { text: "APP LIST"; visible: false }
-              OptRow { label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
-              StepRow { visible: root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
-              EdHeading { visible: root.tilesOn && root.allPluginEntries.length > 0; text: "widget tiles" }
-              Text { visible: root.tilesOn && root.allPluginEntries.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
-                text: "Pin a plugin's widget as a live tile; it leaves the bottom row while it's a tile."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
+              // ---- tiles: system, apps, plugins
+              EdHeading { visible: root.editSection === "apps"; Layout.topMargin: 0; text: "system tiles" }
               Repeater {
-                model: root.tilesOn ? root.allPluginEntries : []
+                model: root.editSection === "apps" ? root.systemTileKeys.filter(function(k) { return ["gpu", "vram", "temp"].indexOf(k[0]) === -1 || root.gpuFound }) : []
+                OptRow {
+                  required property var modelData
+                  label: modelData[1]
+                  options: [["off", "off"], ["small", "small"], ["medium", "medium"], ["wide", "wide"]]
+                  current: root.systemTileMap[modelData[0]] || "off"
+                  onPicked: function(v) { root.setSystemTile(modelData[0], v) }
+                }
+              }
+              EdHeading { visible: root.editSection === "apps"; text: "app tiles" }
+              OptRow { visible: root.editSection === "apps"; label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
+              StepRow { visible: root.editSection === "apps" && root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
+              EdHeading { visible: root.editSection === "apps" && root.allPluginEntries.length > 0; text: "plugin tiles" }
+              Text { visible: root.editSection === "apps" && root.allPluginEntries.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+                text: "Pin a plugin as a live tile; it leaves the bottom row while it's a tile."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
+              Repeater {
+                model: root.editSection === "apps" ? root.allPluginEntries : []
                 OptRow {
                   required property var modelData
                   label: root.widgetName(modelData.id)
@@ -4442,16 +4479,16 @@ Item {
                   onPicked: function(v) { root.setWidgetTile(modelData.id, v) }
                 }
               }
-              OptRow { label: "Running apps below pins"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
-              OptRow { label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
-              OptRow { label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
-              OptRow { label: "Open indicator"; options: [["bar", "bar + dot"], ["dot", "dot"], ["none", "none"]]; current: root.setting("apps", "indicator"); onPicked: function(v) { root.setSetting("apps", "indicator", v) } }
-              OptRow { label: "App icons"; options: parent.parent.onOff; current: root.setting("apps", "icons"); onPicked: function(v) { root.setSetting("apps", "icons", v) } }
-              OptRow { label: "Window title hint"; options: parent.parent.onOff; current: root.setting("apps", "hints"); onPicked: function(v) { root.setSetting("apps", "hints", v) } }
-              OptRow { label: "Status symbols in hints"; options: [[true, "show"], [false, "hide"]]; current: root.setting("apps", "hintSymbols"); onPicked: function(v) { root.setSetting("apps", "hintSymbols", v) } }
-              OptRow { label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
-              OptRow { label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
-              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "Drag apps in the list to reorder or pin them; right-click to unpin."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
+              OptRow { visible: root.editSection === "running"; label: "Show apps that aren't pinned"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Open indicator"; options: [["bar", "bar + dot"], ["dot", "dot"], ["none", "none"]]; current: root.setting("apps", "indicator"); onPicked: function(v) { root.setSetting("apps", "indicator", v) } }
+              OptRow { visible: root.editSection === "running"; label: "App icons"; options: parent.parent.onOff; current: root.setting("apps", "icons"); onPicked: function(v) { root.setSetting("apps", "icons", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Window title hint"; options: parent.parent.onOff; current: root.setting("apps", "hints"); onPicked: function(v) { root.setSetting("apps", "hints", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Status symbols in hints"; options: [[true, "show"], [false, "hide"]]; current: root.setting("apps", "hintSymbols"); onPicked: function(v) { root.setSetting("apps", "hintSymbols", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Unread badges"; options: parent.parent.onOff; current: root.setting("apps", "badges"); onPicked: function(v) { root.setSetting("apps", "badges", v) } }
+              OptRow { visible: root.editSection === "running"; label: "Workspace number"; options: parent.parent.onOff; current: root.setting("apps", "workspace"); onPicked: function(v) { root.setSetting("apps", "workspace", v) } }
+              Text { Layout.fillWidth: true; Layout.topMargin: 4; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: root.editSection === "apps" ? "Drag app tiles to reorder them; drag one onto the running list or right-click it to unpin." : "Drag a running app onto the tiles to pin it."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
             // a widget section
             ColumnLayout {
@@ -4551,7 +4588,7 @@ Item {
               }
               Text {
                 Layout.topMargin: 4
-                textFormat: Text.PlainText; text: "remove this section"
+                textFormat: Text.PlainText; text: "remove this widget"
                 color: remMouse.containsMouse ? root.urgent : root.dim
                 font.family: root.metroFont; font.pixelSize: 14
                 MouseArea { id: remMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
@@ -4645,7 +4682,7 @@ Item {
             Text {
               visible: root.editTab === "section" && !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
-              textFormat: Text.PlainText; text: "remove this section"
+              textFormat: Text.PlainText; text: "remove this widget"
               color: bRemMouse.containsMouse ? root.urgent : root.dim
               font.family: root.metroFont; font.pixelSize: 14
               MouseArea { id: bRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
@@ -4756,7 +4793,7 @@ Item {
             RowLayout {
               Layout.fillWidth: true
               Text {
-                textFormat: Text.PlainText; text: "reset this section"; color: resetMouse.containsMouse ? root.foreground : root.dim
+                textFormat: Text.PlainText; text: "reset this widget"; color: resetMouse.containsMouse ? root.foreground : root.dim
                 font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
               }
@@ -5518,9 +5555,12 @@ Item {
         Item {
           id: pinTiles
           readonly property var items: root.tilesOn ? win.appRows.filter(function(r) { return r.pinned }) : []
+          function sizeCells(z) { return z === "wide" ? [4, 2] : z === "medium" ? [2, 2] : [1, 1] }
           readonly property int appCount: items.length
-          readonly property var wtiles: root.tilesOn ? root.widgetTiles : []
-          visible: root.tilesOn && root.sectionShown("apps") && !(root.searching && root.searchMonitor === win.monitorName) && (items.length + wtiles.length) > 0
+          readonly property var stiles: root.systemTiles
+          readonly property int appOffset: stiles.length
+          readonly property var wtiles: root.widgetTiles
+          visible: root.sectionShown("apps") && !(root.searching && root.searchMonitor === win.monitorName) && (items.length + stiles.length + wtiles.length) > 0
           opacity: root.sectionOpacity("apps")
           Layout.fillWidth: true
           Layout.preferredHeight: rects.length > 0 ? rects.reduce(function(m, r) { return Math.max(m, r.y + r.h) }, 0) : 0
@@ -5530,8 +5570,9 @@ Item {
           // each tile's size in grid cells: pinned apps (the first few medium), then widget tiles
           readonly property var cellSizes: {
             var out = []
+            stiles.forEach(function(t) { out.push(pinTiles.sizeCells(t.size)) })
             for (var k = 0; k < items.length; k++) out.push(k < root.bigTiles ? [2, 2] : [1, 1])
-            wtiles.forEach(function(w) { out.push(w.size === "wide" ? [4, 2] : w.size === "medium" ? [2, 2] : [1, 1]) })
+            wtiles.forEach(function(w) { out.push(pinTiles.sizeCells(w.size)) })
             return out
           }
           readonly property var rects: {
@@ -5552,7 +5593,7 @@ Item {
               id: tile
               required property var modelData
               required property int index
-              readonly property var r: pinTiles.rects[index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              readonly property var r: pinTiles.rects[pinTiles.appOffset + index] || { x: 0, y: 0, w: 0, h: 0, big: false }
               readonly property var windows: modelData.windows || []
               readonly property bool running: windows.length > 0
               readonly property bool focused: windows.some(function(t) { return t.activated && !root.isMinimized(t) })
@@ -5637,6 +5678,82 @@ Item {
               }
             }
           }
+          // system performance as live tiles (dark; accent when running hot)
+          Repeater {
+            model: pinTiles.stiles
+            Rectangle {
+              id: stile
+              required property var modelData
+              required property int index
+              readonly property var r: pinTiles.rects[index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              readonly property var d: root.sysTileData(modelData.key)
+              readonly property bool roomy: r.h > pinTiles.unit + 1
+              x: r.x; y: r.y; width: r.w; height: r.h
+              color: d.hot ? root.accent : root.tileGround
+              scale: stMouse.pressed ? 0.96 : 1
+              Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
+              Text {
+                id: stVal
+                x: 8; y: stile.roomy ? 6 : 3
+                textFormat: Text.PlainText
+                text: stile.d.v
+                color: root.foreground
+                font.family: root.metroFont; font.weight: Font.Light
+                font.pixelSize: stile.roomy ? 48 : Math.min(30, Math.round(pinTiles.unit * 0.4))
+                Text {
+                  anchors.left: parent.right; anchors.baseline: parent.baseline; anchors.leftMargin: 2
+                  textFormat: Text.PlainText; text: stile.d.unit
+                  color: stile.d.hot ? root.foreground : root.dim
+                  font.family: root.metroFont; font.pixelSize: stile.roomy ? 18 : 13
+                }
+              }
+              Text {
+                visible: stile.roomy && stile.d.l2 !== ""
+                x: 8; anchors.top: stVal.bottom; anchors.topMargin: -2
+                width: parent.width - 16
+                textFormat: Text.PlainText; text: stile.d.l2; elide: Text.ElideRight
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+              }
+              // the graph (network), along the bottom above the label
+              Row {
+                visible: stile.roomy && !!stile.d.hist
+                x: 8; width: parent.width - 16
+                anchors.bottom: stLabel.top; anchors.bottomMargin: 6
+                height: Math.round(parent.height * 0.28)
+                spacing: 1
+                readonly property var hist: stile.d.hist || []
+                readonly property real peak: Math.max.apply(null, [1].concat(hist))
+                Repeater {
+                  model: 24
+                  Rectangle {
+                    required property int index
+                    readonly property real v: { var h = parent.hist, i = index - (24 - h.length); return i >= 0 ? h[i] / parent.peak : 0 }
+                    width: Math.max(1, (parent.width - 23) / 24)
+                    height: Math.max(1, v * parent.height)
+                    y: parent.height - height
+                    color: v > 0 ? root.accent : root.faint
+                  }
+                }
+              }
+              Text {
+                id: stLabel
+                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                textFormat: Text.PlainText; text: stile.d.label
+                color: stile.d.hot ? root.foreground : root.dim
+                font.family: root.metroFont; font.pixelSize: stile.roomy ? 14 : 12
+              }
+              MouseArea {
+                id: stMouse
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                onClicked: function(mouse) {
+                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName); root.editSection = "apps"; return }
+                  root.run("omarchy-launch-or-focus-tui btop")
+                }
+              }
+            }
+          }
           // plugin widgets pinned as live tiles: the widget itself, scaled up on an accent tile;
           // a click on the tile opens its panel (docked in the column, like the bottom row's)
           Repeater {
@@ -5645,7 +5762,7 @@ Item {
               id: wtile
               required property var modelData
               required property int index
-              readonly property var r: pinTiles.rects[pinTiles.appCount + index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              readonly property var r: pinTiles.rects[pinTiles.appOffset + pinTiles.appCount + index] || { x: 0, y: 0, w: 0, h: 0, big: false }
               x: r.x; y: r.y; width: r.w; height: r.h
               color: root.accent
               clip: true
