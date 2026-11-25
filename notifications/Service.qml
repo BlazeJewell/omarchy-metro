@@ -55,6 +55,13 @@ Item {
   // drawn only while jake.metro is the bar in use (the classic sidebar shares this plugin)
   property color metroAccent: "#0050EF"
   property bool metroActive: false
+  // black cards with white text while the Metro panel is black (its default);
+  // with Edit sidebar › Panel colour "theme" they follow the theme like before
+  property bool metroThemePanel: false
+  readonly property bool metroBlack: metroActive && !metroThemePanel
+  readonly property color cardBg: metroBlack ? "#000000" : Commons.Color.bar.background
+  readonly property color cardText: metroBlack ? "#FFFFFF" : Commons.Color.notifications.text
+  readonly property color panelText: metroBlack ? "#FFFFFF" : Commons.Color.bar.text
   FileView {
     path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
     watchChanges: true
@@ -70,6 +77,7 @@ Item {
     onLoaded: {
       try {
         var v = JSON.parse(text())
+        service.metroThemePanel = !!(v && v.general && v.general.panelColor === "theme")
         var a = v && v.general ? String(v.general.accent || "") : ""
         if (/^#[0-9a-fA-F]{6}$/.test(a)) service.metroAccent = a
       } catch (e) {}
@@ -550,6 +558,11 @@ Item {
   function landed() { if (t >= 1) settled() }
 
   readonly property var layout: { layoutRevision; return layoutWith(expanded, openDeck) }
+  // jake.metro: "+N more" shows every stack until the notifications are all gone
+  property bool showAllDecks: false
+  readonly property int toastCount: toasts.count
+  onToastCountChanged: if (toastCount === 0) showAllDecks = false
+  onShowAllDecksChanged: layoutRevision += 1
 
   // The deck as it would stand with this deck open; the keyboard asks before
   // it moves.
@@ -562,6 +575,13 @@ Item {
     return Layout.compute(rows, {
       expanded: isExpanded,
       openDeck: deckKey,
+      // jake.metro: inside the panel, at most two stacks (the rest behind "+N more"),
+      // repeats collapse, and stacks peek less, so a burst can't bury the column
+      maxDecks: service.inPanel && !service.showAllDecks ? 2 : 0,
+      dedupe: service.inPanel,
+      visible: service.inPanel ? 2 : 0,
+      peek: service.inPanel ? 6 : undefined,
+      moreHeight: service.inPanel ? 34 : 0,
       gap: gap,
       deckGap: Style.space(11),
       heightOf: function(key) { return service.heights[key] || Style.space(58) }
@@ -1585,11 +1605,11 @@ Item {
           x: -(1 - shown) * width
           width: parent.width
           height: deck.y + service.deckHeight + service.panelInset
-          color: Commons.Color.bar.background
+          color: service.cardBg
           Rectangle {
             anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: service.panelInset; rightMargin: service.panelInset }
             height: 1
-            color: Qt.rgba(Commons.Color.bar.text.r, Commons.Color.bar.text.g, Commons.Color.bar.text.b, 0.12)
+            color: Qt.rgba(service.panelText.r, service.panelText.g, service.panelText.b, 0.12)
           }
         }
 
@@ -1602,6 +1622,34 @@ Item {
 
           // One hover region over the whole deck, so crossing between cards does
           // not flicker it shut. It accepts no buttons; clicks reach the cards.
+          // jake.metro: what didn't fit, and a way to clear the lot
+          Item {
+            visible: service.inPanel && service.layout.overflow > 0
+            z: 6000
+            x: 0
+            y: service.layout.moreY + 6
+            width: parent.width
+            height: 28
+            Text {
+              anchors.left: parent.left; anchors.leftMargin: 6
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "+" + service.layout.overflow + " more"
+              color: moreMouse.containsMouse ? service.panelText : service.metroAccent
+              font.family: "Selawik"; font.pixelSize: 15
+              MouseArea { id: moreMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: service.showAllDecks = true }
+            }
+            Text {
+              anchors.right: parent.right; anchors.rightMargin: 6
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "clear all"
+              color: clearMouse.containsMouse ? service.panelText : Qt.rgba(service.panelText.r, service.panelText.g, service.panelText.b, 0.6)
+              font.family: "Selawik"; font.pixelSize: 15
+              MouseArea { id: clearMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: service.clearAll("dismissed", false) }
+            }
+          }
+
           MouseArea {
             id: hoverArea
             z: 5000

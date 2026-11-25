@@ -71,8 +71,8 @@ Item {
   signal linkOpened()
 
   readonly property bool critical: row.urgency === 2
-  readonly property color dimColor: Qt.darker(Commons.Color.notifications.text, 1.4)
-  readonly property color bodyColor: Qt.darker(Commons.Color.notifications.text, 1.15)
+  readonly property color dimColor: Qt.darker((card.scene ? card.scene.cardText : Commons.Color.notifications.text), 1.4)
+  readonly property color bodyColor: Qt.darker((card.scene ? card.scene.cardText : Commons.Color.notifications.text), 1.15)
   readonly property color accentColor: critical ? Commons.Color.urgent
                                                : (row.urgency === 0 ? dimColor : Commons.Color.notifications.countdown)
   readonly property bool hasBody: String(row.body || "").length > 0
@@ -233,7 +233,7 @@ Item {
     height: body.height
     radius: 0
     // jake.metro: drawn like a section of the panel it sits in.
-    color: Commons.Color.bar.background
+    color: (card.scene ? card.scene.cardBg : Commons.Color.bar.background)
     borderSpec: Border.none()
   }
   Rectangle {
@@ -241,7 +241,7 @@ Item {
     radius: plate.radius
     color: "transparent"
     border.width: 1
-    border.color: Qt.rgba(Commons.Color.bar.text.r, Commons.Color.bar.text.g, Commons.Color.bar.text.b, 0.16)
+    border.color: Qt.rgba((card.scene ? card.scene.panelText : Commons.Color.bar.text).r, (card.scene ? card.scene.panelText : Commons.Color.bar.text).g, (card.scene ? card.scene.panelText : Commons.Color.bar.text).b, 0.16)
   }
   // jake.metro: an accent stripe down the card's left edge
   Rectangle {
@@ -257,7 +257,7 @@ Item {
     anchors { leftMargin: plate.borderLeft; rightMargin: plate.borderRight
               topMargin: plate.borderTop; bottomMargin: plate.borderBottom }
     visible: card.selected
-    color: Style.hoverFillFor(Commons.Color.notifications.text, Commons.Color.accent)
+    color: Style.hoverFillFor((card.scene ? card.scene.cardText : Commons.Color.notifications.text), Commons.Color.accent)
   }
 
   Item {
@@ -332,7 +332,7 @@ Item {
           anchors.fill: parent
           visible: thumb.lettered
           radius: Style.cornerRadius
-          color: Style.normalFillFor(Commons.Color.notifications.text, card.accentColor, Commons.Color.urgent)
+          color: Style.normalFillFor((card.scene ? card.scene.cardText : Commons.Color.notifications.text), card.accentColor, Commons.Color.urgent)
 
           Text {
             textFormat: Text.PlainText
@@ -351,7 +351,7 @@ Item {
           anchors.centerIn: parent
           visible: thumb.glyphed
           text: String(card.row.glyph || "")
-          color: Commons.Color.notifications.text
+          color: (card.scene ? card.scene.cardText : Commons.Color.notifications.text)
           font.family: Delivery.omarchyGlyph(card.row.glyph) ? "omarchy" : Style.font.family
           font.pixelSize: (thumb.compact ? Style.font.icon : Style.font.displayLarge)
         }
@@ -381,7 +381,7 @@ Item {
             maskSource: mask
             brightness: thumb.mono ? 1.0 : 0.0
             colorization: thumb.mono ? 1.0 : 0.0
-            colorizationColor: Commons.Color.notifications.text
+            colorizationColor: (card.scene ? card.scene.cardText : Commons.Color.notifications.text)
           }
         }
 
@@ -417,7 +417,7 @@ Item {
                    - (titleMarks.visible ? titleMarks.width + Style.space(7) : 0)
                    - Style.space(8))
             text: card.redacted ? I18n.t("notifications.redactedSummary") : String(card.row.summary || "")
-            color: Commons.Color.notifications.text
+            color: (card.scene ? card.scene.cardText : Commons.Color.notifications.text)
             font.family: "Liberation Sans"
             font.pixelSize: Style.font.title
             font.bold: true
@@ -443,7 +443,7 @@ Item {
                 textFormat: Text.PlainText
                 required property var modelData
                 text: modelData
-                color: Commons.Color.notifications.text
+                color: (card.scene ? card.scene.cardText : Commons.Color.notifications.text)
                 opacity: 0.9
                 font.family: Style.font.family
                 font.pixelSize: Style.font.body
@@ -494,7 +494,7 @@ Item {
                   anchors.centerIn: parent
                   textFormat: Text.PlainText
                   text: "✕"
-                  color: shut.hot ? Commons.Color.notifications.text : card.dimColor
+                  color: shut.hot ? (card.scene ? card.scene.cardText : Commons.Color.notifications.text) : card.dimColor
                   font.pixelSize: Math.round(Style.font.caption * 1.44)
                 }
 

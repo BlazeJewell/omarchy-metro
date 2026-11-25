@@ -30,7 +30,7 @@ Item {
 
   Rectangle {
     anchors { fill: parent; topMargin: button.rule; leftMargin: button.leftRule ? button.rule : 0 }
-    color: button.hot ? Style.hoverFillFor(Commons.Color.notifications.text, Commons.Color.accent) : "transparent"
+    color: button.hot ? Style.hoverFillFor((button.toast && button.toast.scene ? button.toast.scene.cardText : Commons.Color.notifications.text), Commons.Color.accent) : "transparent"
     Behavior on color { ColorAnimation { duration: Style.duration(120) } }
   }
 
@@ -72,7 +72,7 @@ Item {
       text: button.labelText
       textFormat: Text.PlainText
       elide: tooLong ? Text.ElideRight : Text.ElideNone
-      color: button.hot ? Commons.Color.notifications.text : Qt.darker(Commons.Color.notifications.text, 1.15)
+      color: button.hot ? (button.toast && button.toast.scene ? button.toast.scene.cardText : Commons.Color.notifications.text) : Qt.darker((button.toast && button.toast.scene ? button.toast.scene.cardText : Commons.Color.notifications.text), 1.15)
       font.family: Style.font.family
       font.pixelSize: Style.font.body
     }

@@ -16,22 +16,44 @@ function groupKeyFor(row) {
 //   decks:      [{ key, rows: [row...] }] in display order, newest deck first
 //   placements: { rowKey: { y, height, scale, opacity, z, front, hidden } }
 //   height:     total height the deck area occupies
+// jake.metro options (all off unless given):
+//   maxDecks:   draw at most this many decks; the rest are hidden and counted in `overflow`
+//   dedupe:     a card with the same app, title and text as a newer one is hidden
+//   visible:    cards drawn per shut deck (default VISIBLE); peek: px each one drops (default PEEK)
+//   moreHeight: room kept under the decks for a "+N more" row when anything overflows
 function compute(rows, opts) {
   var expanded = !!opts.expanded
   var gap = opts.gap || 6
   var deckGap = opts.deckGap || 12
   var heightOf = opts.heightOf || function() { return 76 }
-  var order = [], byKey = {}
+  var visibleN = opts.visible || VISIBLE
+  var peek = opts.peek !== undefined ? opts.peek : PEEK
+  var maxDecks = opts.maxDecks || 0
+  var order = [], byKey = {}, seen = {}, dupes = []
   for (var i = 0; i < rows.length; i++) {
+    if (opts.dedupe) {
+      var sig = groupKeyFor(rows[i]) + "\u0001" + String(rows[i].summary || "") + "\u0001" + String(rows[i].body || "")
+      if (seen[sig]) { dupes.push(rows[i]); continue }
+      seen[sig] = true
+    }
     var key = groupKeyFor(rows[i])
     if (!byKey[key]) { byKey[key] = { key: key, rows: [] }; order.push(key) }
     byKey[key].rows.push(rows[i])
   }
 
   var decks = order.map(function(key) { return byKey[key] })
+  var shownDecks = maxDecks > 0 ? decks.slice(0, maxDecks) : decks
+  var overflow = 0
 
   var placements = {}
   var y = 0
+
+  // repeats and decks past the limit: kept, but not drawn and taking no room
+  dupes.forEach(function(row) { placements[row.key] = { height: heightOf(row.key), y: 0, scale: 1, opacity: 0, z: 0, front: false, hidden: true } })
+  for (var h = shownDecks.length; h < decks.length; h++) {
+    decks[h].rows.forEach(function(row) { overflow++; placements[row.key] = { height: heightOf(row.key), y: 0, scale: 1, opacity: 0, z: 0, front: false, hidden: true } })
+  }
+  decks = shownDecks
 
   for (var k = 0; k < decks.length; k++) {
     var items = decks[k].rows
@@ -51,12 +73,12 @@ function compute(rows, opts) {
         }
         y += height + gap
       } else {
-        var drawn = r < VISIBLE
+        var drawn = r < visibleN
         placements[item.key] = {
           height: frontHeight,
-          y: deckTop + r * PEEK,
+          y: deckTop + Math.min(r, visibleN - 1) * peek,
           scale: Math.max(0.7, 1 - r * SHRINK),
-          opacity: r === 0 ? 1 : (drawn ? (r === VISIBLE - 1 ? FADE : 0.85) : 0),
+          opacity: r === 0 ? 1 : (drawn ? (r === visibleN - 1 ? FADE : 0.85) : 0),
           z: 1000 - r,
           front: r === 0,
           hidden: !drawn
@@ -64,11 +86,13 @@ function compute(rows, opts) {
       }
     }
 
-    if (!open) y = deckTop + frontHeight + Math.min(items.length - 1, VISIBLE - 1) * PEEK
+    if (!open) y = deckTop + frontHeight + Math.min(items.length - 1, visibleN - 1) * peek
     else y -= gap
 
     if (k < decks.length - 1) y += deckGap
   }
 
-  return { decks: decks, placements: placements, height: Math.max(0, y) }
+  var moreY = Math.max(0, y)
+  if (overflow > 0 && opts.moreHeight) y = moreY + opts.moreHeight
+  return { decks: decks, placements: placements, height: Math.max(0, y), overflow: overflow, moreY: moreY }
 }
