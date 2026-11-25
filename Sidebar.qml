@@ -6425,7 +6425,8 @@ Item {
         }
       }
 
-      // -- quick settings: drawn over the sidebar content, just above the bottom row --
+      // -- quick settings: takes over the whole column above the bottom row (Metro's
+      // Action Center), its content from the top, scrolling when it doesn't fit --
       Rectangle {
         id: qsOverlay
         visible: win.qsHere
@@ -6433,11 +6434,9 @@ Item {
         readonly property real bottomY: win.bottomEdgeY
         x: win.panelInnerX
         width: win.panelInnerW
-        height: Math.min(settingsPanel.implicitHeight + 7, bottomY - sideFlick.y)
-        y: bottomY - height
+        y: win.panelInnerX
+        height: Math.max(0, bottomY - y)
         color: win.color.a < 1 ? root.background : win.color
-        // the separator line the panel always had above it
-        Rectangle { x: sideFlick.x; width: sideFlick.width; height: 1; color: root.faint }
         // swallow clicks and scrolls so they don't reach the sections underneath
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
         Flickable {
@@ -6445,7 +6444,8 @@ Item {
           anchors.fill: parent
           anchors.leftMargin: sideFlick.x
           anchors.rightMargin: sideFlick.x
-          anchors.topMargin: 7
+          anchors.topMargin: 16
+          anchors.bottomMargin: 8
           clip: true
           contentHeight: settingsPanel.implicitHeight
           interactive: contentHeight > height
@@ -6455,6 +6455,18 @@ Item {
             width: qsFlick.width
             spacing: 2
 
+            // heading: QUICK SETTINGS, with the day and date
+            RowLayout {
+              visible: root.qsPage === ""
+              Layout.fillWidth: true
+              Layout.bottomMargin: 10
+              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "QUICK SETTINGS"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+              Text {
+                textFormat: Text.PlainText
+                text: Qt.locale(Commons.I18n.formatLocale).toString(clock.date, "dddd d MMMM").toLowerCase() + "  ·  " + Qt.formatTime(clock.date, root.setting("clock", "h24") ? "HH:mm" : "h:mm AP")
+                color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+              }
+            }
 
             ColumnLayout {
               id: accordion

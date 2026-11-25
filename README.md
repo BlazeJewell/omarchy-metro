@@ -20,7 +20,7 @@ Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 | Pinned apps | Tiles in the accent colour, the first ones medium (2×2), the rest small; the app on screen has a white edge, unread counts sit top right |
 | Running apps | Rows with the icon on a square tile, names in lowercase light type, an accent bar on the one on screen |
 | Super+Space | The Omarchy menu in big lowercase type, windows dimmed behind; `›` drills in, the round `‹` comes back |
-| Quick settings | Toggle tiles (wi-fi, bluetooth, quiet, night light, stay awake, power profile, capture, lock), then Metro rows, square toggle switches and block sliders |
+| Quick settings | Takes over the whole column (heading with the date), then toggle tiles (wi-fi, bluetooth, quiet, night light, stay awake, power profile, capture, lock), then Metro rows, square toggle switches and block sliders |
 | Bottom row | One round **settings** button on the left (quick settings); your plugins' icons on the right |
 | Overview (Super) | A panorama: a giant "overview" title, one column per workspace with its caption, the next one peeking in at the edge; ← → move between workspaces |
 | Notifications | Square cards with an accent stripe, inside the top of the column |
