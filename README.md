@@ -21,7 +21,7 @@ Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 | Running apps | Rows with the icon on a square tile, names in lowercase light type, an accent bar on the one on screen |
 | Super+Space | The Omarchy menu in big lowercase type, windows dimmed behind; `›` drills in, the round `‹` comes back |
 | Quick settings | Toggle tiles (wi-fi, bluetooth, quiet, night light, stay awake, power profile, capture, lock), then Metro rows, square toggle switches and block sliders |
-| App bar | Round outlined buttons along the bottom: **settings** first, then network, sound, bluetooth and power when the column is wide enough |
+| Bottom row | One round **settings** button on the left (quick settings); your plugins' icons on the right |
 | Overview (Super) | A panorama: a giant "overview" title, one column per workspace with its caption, the next one peeking in at the edge; ← → move between workspaces |
 | Notifications | Square cards with an accent stripe, inside the top of the column |
 | Corners | Square everywhere, windows included (Edit sidebar › Corners to change) |

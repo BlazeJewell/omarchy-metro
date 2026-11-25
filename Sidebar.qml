@@ -6319,12 +6319,10 @@ Item {
           RowLayout {
             anchors.fill: parent
             spacing: 6
-            // Metro app bar: round outlined buttons. Settings (quick settings) first,
-            // then straight-to-section shortcuts while the column is wide enough.
+            // Metro app bar: one round settings button on the left (quick settings);
+            // the plugins' icons sit on the right.
             Repeater {
-              model: [["\uf013", "settings", "Settings"], ["\uf1eb", "network", "Network"], ["\uf028", "sound", "Sound"],
-                      ["\uf293", "bluetooth", "Bluetooth"], ["\uf011", "power", "Power"]]
-                     .filter(function(b, i) { return i === 0 || root.sidebarWidth >= 300 })
+              model: [["\uf013", "settings", "Settings"]]
               Rectangle {
                 id: abBtn
                 required property var modelData
