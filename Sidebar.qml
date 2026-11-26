@@ -7524,8 +7524,8 @@ Item {
               SectionBody {
                 visible: root.qsSection === "network"
                 SwitchRow { label: "Wi-Fi"; on: root.qsState.wifi; onToggled: root.qsToggle("wifi") }
-                Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
-                  text: root.qsState.netName ? "Connected: " + root.qsState.netName : "Not connected" }
+                Text { Layout.fillWidth: true; textFormat: Text.PlainText; elide: Text.ElideRight; color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+                  text: root.qsState.netName ? "connected to " + root.qsState.netName : "not connected" }
                 LinkRow { label: "Networks & DNS"; onActivated: root.qsPage = "network" }
               }
 
@@ -7623,44 +7623,36 @@ Item {
               SectionHeader { sectionId: "power"; icon: ""; label: "Power"; status: root.profileLabel(root.qsState.profile) + (root.batteryPresent ? " · " + root.batteryPct + "%" : "") }
               SectionBody {
                 visible: root.qsSection === "power"
-                RowLayout {
-                  Layout.fillWidth: true
+                Caption { text: "power mode"; visible: root.qsState.profile !== "" }
+                Segmented {
                   visible: root.qsState.profile !== ""
-                  spacing: 4
-                  Repeater {
-                    model: [["power-saver", "Saver"], ["balanced", "Balanced"], ["performance", "Perform."]]
-                    Rectangle {
-                      required property var modelData
-                      readonly property bool sel: root.qsState.profile === modelData[0]
-                      Layout.fillWidth: true
-                      Layout.preferredHeight: 26
-                      radius: 0
-                      color: sel ? root.foreground : (pMouse.containsMouse ? root.faint : "transparent")
-                      border.width: sel ? 0 : 1
-                      border.color: root.faint
-                      Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
-                      MouseArea { id: pMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setProfile(modelData[0]) }
-                    }
-                  }
+                  options: [["power-saver", "saver"], ["balanced", "balanced"], ["performance", "performance"]]
+                  current: root.qsState.profile
+                  onPicked: function(v) { root.setProfile(v) }
                 }
                 SwitchRow { label: "Stay awake"; on: root.qsState.idle; onToggled: root.qsToggle("idle") }
                 RowLayout {
                   Layout.fillWidth: true
+                  Layout.topMargin: 4
                   spacing: 2
                   Repeater {
                     model: [["", "Lock", "omarchy-system-lock"], ["", "Sleep", "systemctl suspend"], ["", "Logout", "omarchy-system logout"],
                             ["", "Reboot", "omarchy-system reboot"], ["", "Off", "omarchy-system shutdown"]]
-                    Rectangle {
+                    Item {
                       required property var modelData
                       Layout.fillWidth: true
-                      Layout.preferredHeight: 40
-                      radius: 0
-                      color: sMouse.containsMouse ? root.faint : "transparent"
+                      Layout.preferredHeight: 56
                       Column {
                         anchors.centerIn: parent
-                        spacing: 2
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: modelData[1]; color: root.dim; font.family: root.fontFamily; font.pixelSize: 8 }
+                        spacing: 3
+                        Rectangle {
+                          anchors.horizontalCenter: parent.horizontalCenter
+                          width: 34; height: 34; radius: 17
+                          color: sMouse.pressed ? root.foreground : (sMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent")
+                          border.width: 2; border.color: root.foreground
+                          Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[0]; color: sMouse.pressed ? root.background : root.foreground; font.family: root.fontFamily; font.pixelSize: 14 }
+                        }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: String(modelData[1]).toLowerCase(); color: root.foreground; font.family: root.metroFont; font.pixelSize: 12 }
                       }
                       MouseArea { id: sMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.systemAction(modelData[2]) }
                     }
@@ -7674,17 +7666,26 @@ Item {
               id: ph
               property string title: ""
               Layout.fillWidth: true
-              implicitHeight: 32
+              implicitHeight: 52
               radius: 0
-              color: phMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06) : "transparent"
-              Text { anchors.verticalCenter: parent.verticalCenter; x: 6; textFormat: Text.PlainText; text: "‹  " + ph.title; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 12; font.bold: true }
+              color: "transparent"
+              Rectangle {
+                id: phBack
+                anchors.verticalCenter: parent.verticalCenter
+                width: 28; height: 28; radius: 14
+                color: phMouse.pressed ? root.foreground : (phMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent")
+                border.width: 2; border.color: root.foreground
+                Text { anchors.centerIn: parent; anchors.horizontalCenterOffset: -1; textFormat: Text.PlainText; text: "‹"; color: phMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 20 }
+              }
+              Text { anchors.verticalCenter: parent.verticalCenter; anchors.left: phBack.right; anchors.leftMargin: 10; textFormat: Text.PlainText; text: ph.title.toLowerCase(); color: root.foreground; font.family: root.metroFont; font.pixelSize: 34; font.weight: Font.Light }
               MouseArea { id: phMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.qsPage = "" }
             }
             component Caption: Text {
               Layout.fillWidth: true
-              Layout.topMargin: 4
+              Layout.topMargin: 6
               textFormat: Text.PlainText
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+              color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+              font.capitalization: Font.AllLowercase
             }
             component Segmented: RowLayout {
               id: seg
@@ -7699,12 +7700,19 @@ Item {
                   required property var modelData
                   readonly property bool sel: seg.current === modelData[0]
                   Layout.fillWidth: true
-                  Layout.preferredHeight: 26
+                  Layout.preferredHeight: 34
                   radius: 0
-                  color: sel ? root.foreground : (sgMouse.containsMouse ? root.faint : "transparent")
-                  border.width: sel ? 0 : 1
-                  border.color: root.faint
-                  Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: modelData[1]; color: parent.sel ? root.background : root.dim; font.family: root.fontFamily; font.pixelSize: 10; font.bold: parent.sel }
+                  color: sel ? root.accent : (sgMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1) : "transparent")
+                  border.width: 2
+                  border.color: sel ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.45)
+                  Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 8
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText; text: String(modelData[1]).toLowerCase(); color: root.foreground
+                    font.family: root.metroFont; font.pixelSize: 14
+                    fontSizeMode: Text.HorizontalFit; minimumPixelSize: 10
+                  }
                   MouseArea { id: sgMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: seg.picked(modelData[0]) }
                 }
               }
@@ -7742,11 +7750,11 @@ Item {
                     Rectangle {
                       visible: root.pwSsid === wrow.modelData.name
                       Layout.fillWidth: true
-                      Layout.preferredHeight: 28
+                      Layout.preferredHeight: 34
                       radius: 0
                       color: "transparent"
-                      border.width: 1
-                      border.color: root.dim
+                      border.width: 2
+                      border.color: pwInput.activeFocus ? root.accent : root.dim
                       TextInput {
                         id: pwInput
                         anchors.fill: parent
@@ -7755,20 +7763,20 @@ Item {
                         verticalAlignment: TextInput.AlignVCenter
                         echoMode: TextInput.Password
                         color: root.foreground
-                        font.family: root.fontFamily; font.pixelSize: 11
+                        font.family: root.metroFont; font.pixelSize: 14
                         clip: true
                         onVisibleChanged: if (visible) { text = ""; Qt.callLater(function() { pwInput.forceActiveFocus() }) }
                         Keys.onReturnPressed: root.wifiConnectWithPassword(text)
                         Keys.onEnterPressed: root.wifiConnectWithPassword(text)
                         Keys.onEscapePressed: root.pwSsid = ""
-                        Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "Password, then Enter"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                        Text { anchors.verticalCenter: parent.verticalCenter; visible: !parent.text; text: "password, then enter"; color: root.dim; font.family: root.metroFont; font.pixelSize: 14 }
                       }
                     }
                   }
                 }
                 Caption { text: "DNS" }
                 Segmented {
-                  options: [["DHCP", "DHCP"], ["Cloudflare", "Cloudflare"], ["Google", "Google"]]
+                  options: [["DHCP", "automatic"], ["Cloudflare", "cloudflare"], ["Google", "google"]]
                   current: root.dnsProvider
                   onPicked: function(v) { root.setDns(v) }
                 }
@@ -7798,7 +7806,7 @@ Item {
                     }
                     Text {
                       textFormat: Text.PlainText; text: "forget"; color: fgMouse.containsMouse ? root.urgent : root.dim
-                      font.family: root.fontFamily; font.pixelSize: 9
+                      font.family: root.metroFont; font.pixelSize: 13
                       MouseArea { id: fgMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.btForget(modelData) }
                     }
                   }
@@ -7806,8 +7814,8 @@ Item {
                 Caption { text: root.btAdapter && root.btAdapter.discovering ? "NEARBY · SCANNING…" : "NEARBY" }
                 Text {
                   visible: root.btNearby.length === 0
-                  textFormat: Text.PlainText; text: root.btAdapter && root.btAdapter.enabled ? "Looking for devices…" : "Turn Bluetooth on to scan"
-                  color: root.dim; font.family: root.fontFamily; font.pixelSize: 10
+                  textFormat: Text.PlainText; text: root.btAdapter && root.btAdapter.enabled ? "looking for devices…" : "turn bluetooth on to scan"
+                  color: root.dim; font.family: root.metroFont; font.pixelSize: 13
                 }
                 Repeater {
                   model: root.btNearby
@@ -7839,14 +7847,14 @@ Item {
                   ChoiceRow { required property var modelData; label: root.nodeName(modelData); selected: !!root.source && root.source.id === modelData.id; onChosen: root.setSource(modelData) }
                 }
                 Caption { text: "APPS" }
-                Text { visible: root.streamNodes.length === 0; textFormat: Text.PlainText; text: "Nothing is playing"; color: root.dim; font.family: root.fontFamily; font.pixelSize: 10 }
+                Text { visible: root.streamNodes.length === 0; textFormat: Text.PlainText; text: "nothing is playing"; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
                 Repeater {
                   model: root.streamNodes
                   ColumnLayout {
                     required property var modelData
                     Layout.fillWidth: true
                     spacing: 0
-                    Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.streamName(modelData); color: root.foreground; font.family: root.fontFamily; font.pixelSize: 10; elide: Text.ElideRight }
+                    Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.streamName(modelData); color: root.foreground; font.family: root.metroFont; font.pixelSize: 14; elide: Text.ElideRight }
                     SliderRow {
                       label: ""
                       value: modelData.audio ? modelData.audio.volume : 0
@@ -7888,23 +7896,7 @@ Item {
                   current: root.displayScale
                   onPicked: function(v) { root.setScale(v) }
                 }
-                Caption { text: "TEXT SIZE" }
-                RowLayout {
-                  Layout.fillWidth: true
-                  spacing: 6
-                  Repeater {
-                    model: [["−", -1], ["+", 1]]
-                    Rectangle {
-                      required property var modelData
-                      Layout.preferredWidth: 30; Layout.preferredHeight: 26; radius: 0
-                      color: tsMouse.containsMouse ? root.faint : "transparent"
-                      border.width: 1; border.color: root.faint
-                      Text { anchors.centerIn: parent; text: modelData[0]; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 13 }
-                      MouseArea { id: tsMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setTextPx(root.textPx + modelData[1]) }
-                    }
-                  }
-                  Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.textPx + " px"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 11 }
-                }
+                StepRow { label: "Text size"; value: root.textPx; step: 1; min: 9; max: 20; suffix: " px"; onChanged: function(v) { root.setTextPx(v) } }
                 SwitchRow { label: "Night light"; on: root.qsState.night; onToggled: root.qsToggle("night") }
               }
             }
@@ -7979,7 +7971,7 @@ Item {
                         : root.updateCount === "?" ? "Can\u2019t check for updates"
                         : "Update rice \u00b7 " + root.updateCount + " new"
                   color: updBtn.ready || updMouse.containsMouse ? root.foreground : root.dim
-                  font.family: root.metroFont; font.pixelSize: 14
+                  font.family: root.metroFont; font.pixelSize: 14; font.capitalization: Font.AllLowercase
                 }
               }
               MouseArea {
