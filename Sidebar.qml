@@ -589,7 +589,13 @@ Item {
                + " " + Math.round((Number(fvGpuTotal.text()) || 0) / 1048576) + " " + temp)
     } else if (root.gpuNvidia && !nvidiaProc.running) nvidiaProc.running = true
     root.parseStats(out.join("\n"))
+    // jake.metro: the last 24 readings of each, for the live tiles' graphs
+    var vr = root.vramTotal > 0 ? 100 * root.vramUsed / root.vramTotal : 0, cur = { cpu: root.cpu, mem: root.mem, disk: root.disk, gpu: root.gpu, vram: vr, temp: root.gpuTemp }
+    var h = {}
+    for (var k in cur) h[k] = (root.statHistory[k] || []).concat([cur[k]]).slice(-24)
+    root.statHistory = h
   }
+  property var statHistory: ({})
   Timer {
     interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: true; repeat: true; triggeredOnStart: true
     onTriggered: root.pollStats()
@@ -4919,6 +4925,8 @@ Item {
                 }
               }
             }
+            // jake.metro: medium tiles flip, wide tiles peek (small ones stay still)
+            OptRow { label: "Live tiles"; options: [[true, "on"], [false, "off"]]; current: root.setting("apps", "liveTiles") !== false; onPicked: function(v) { root.setSetting("apps", "liveTiles", v) } }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
             OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› When it appears"; options: [["float", "over windows"], ["push", "push windows"]]; current: root.setting("general", "autohideMode"); onPicked: function(v) { root.setSetting("general", "autohideMode", v) } }
             OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› Hidden edge"; options: [["show", "show"], ["hide", "hide"]]; current: root.setting("general", "autohideEdge"); onPicked: function(v) { root.setSetting("general", "autohideEdge", v) } }
@@ -5203,6 +5211,64 @@ Item {
         xScale: win.tileScale(tid)
         yScale: xScale
         Behavior on xScale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+      }
+      // ---- jake.metro: live tiles (Windows Phone's templates) ---------------------
+      // small tiles stay still; a medium tile flips over (on its horizontal axis) and a
+      // wide one peeks (the front slides up to show the back), each on its own beat;
+      // they rest while editing, while the sidebar is tucked away and with animations off
+      readonly property bool liveOn: root.winAnimMs > 0 && !win.editHere && !win.tucked && root.setting("apps", "liveTiles") !== false
+      property int liveTick: 0
+      Timer { interval: 1000; repeat: true; running: win.liveOn; onTriggered: win.liveTick++ }
+      function tidHash(s) { var h = 7; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 100003; return h }
+      component LiveFace: Item {
+        id: lf
+        property string tid: ""
+        property bool big: false          // medium or wide
+        property bool wide: false
+        property bool hasBack: false
+        property alias frontData: lfFront.data
+        property alias backData: lfBack.data
+        readonly property bool live: big && hasBack && win.liveOn
+        readonly property int period: 6 + win.tidHash(tid) % 5
+        readonly property int phase: win.tidHash(tid + "#") % 10
+        // the front shows a little longer than the back
+        readonly property bool showBack: live && (win.liveTick + phase) % (period * 2) >= period + 2
+        property real t: showBack ? 1 : 0
+        Behavior on t { NumberAnimation { duration: lf.wide ? 750 : 640; easing.type: lf.wide ? Easing.OutCubic : Easing.InOutCubic } }
+        clip: true
+        Item {
+          id: lfFront
+          width: lf.width; height: lf.height
+          y: lf.wide ? -Math.round(lf.t * lf.height) : 0
+          visible: lf.wide ? lf.t < 1 : lf.t < 0.5
+          transform: Rotation { origin.y: lfFront.height / 2; axis { x: 1; y: 0; z: 0 } angle: lf.wide ? 0 : lf.t * 180 }
+        }
+        Item {
+          id: lfBack
+          width: lf.width; height: lf.height
+          y: lf.wide ? Math.round((1 - lf.t) * lf.height) : 0
+          visible: lf.hasBack && (lf.wide ? lf.t > 0 : lf.t >= 0.5)
+          transform: Rotation { origin.y: lfBack.height / 2; axis { x: 1; y: 0; z: 0 } angle: lf.wide ? 0 : lf.t * 180 - 180 }
+        }
+      }
+      // a bar graph of the last readings, for the tiles' backs
+      component LiveBars: Row {
+        id: lb
+        property var hist: []
+        property real peak: Math.max.apply(null, [1].concat(hist))
+        property color barColor: root.accent
+        spacing: 1
+        Repeater {
+          model: 24
+          Rectangle {
+            required property int index
+            readonly property real v: { var h = lb.hist || [], i = index - (24 - h.length); return i >= 0 ? h[i] / lb.peak : 0 }
+            width: Math.max(1, (lb.width - 23) / 24)
+            height: Math.max(1, v * lb.height)
+            y: lb.height - height
+            color: v > 0 ? lb.barColor : root.faint
+          }
+        }
       }
       function startTileDrag(id) {
         var r = win.tileRects.tiles[id]
@@ -6288,30 +6354,70 @@ Item {
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               border.width: focused || dropHere ? 2 : 0
               border.color: dropHere ? root.foreground : "#FFFFFF"
-              IconImage {
-                anchors.centerIn: parent
-                anchors.verticalCenterOffset: -6
-                width: tile.r.big ? 44 : 28; height: width
-                source: root.iconFor(tile.modelData.entry && tile.modelData.entry.icon ? tile.modelData.entry.icon : tile.modelData.key)
-                opacity: tile.running && tile.windows.every(function(t) { return root.isMinimized(t) }) ? 0.6 : 1
-              }
-              Text {
-                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
-                width: parent.width - 16 - (countT.visible ? countT.implicitWidth + 4 : 0)
-                textFormat: Text.PlainText
-                text: root.displayName(tile.modelData).toLowerCase()
-                color: "#FFFFFF"
-                font.family: root.metroFont; font.pixelSize: tile.r.big ? 14 : 11
-                elide: Text.ElideRight
-              }
-              // windows open (several) on medium tiles, bottom right
-              Text {
-                id: countT
-                visible: tile.r.big && tile.windows.length > 1
-                anchors.right: parent.right; anchors.rightMargin: 8
-                anchors.bottom: parent.bottom; anchors.bottomMargin: 5
-                textFormat: Text.PlainText; text: tile.windows.length
-                color: "#FFFFFF"; font.family: root.metroFont; font.pixelSize: 14
+              readonly property string iconSrc: root.iconFor(tile.modelData.entry && tile.modelData.entry.icon ? tile.modelData.entry.icon : tile.modelData.key)
+              readonly property string liveTitle: { var w = tile.windows[tile.windows.length - 1]; return w && w.title ? String(w.title) : "" }
+              readonly property bool wideTile: tile.r.w > pinTiles.unit * 2 + pinTiles.gap + 1
+              LiveFace {
+                anchors.fill: parent
+                tid: tile.tid
+                big: tile.r.big && tile.r.h > pinTiles.unit + 1
+                wide: tile.wideTile
+                hasBack: tile.liveTitle !== ""
+                frontData: [
+                  IconImage {
+                    anchors.centerIn: parent
+                    anchors.verticalCenterOffset: -6
+                    width: tile.r.big ? 44 : 28; height: width
+                    source: tile.iconSrc
+                    opacity: tile.running && tile.windows.every(function(t) { return root.isMinimized(t) }) ? 0.6 : 1
+                  },
+                  Text {
+                    x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                    width: parent.width - 16 - (countT.visible ? countT.implicitWidth + 4 : 0)
+                    textFormat: Text.PlainText
+                    text: root.displayName(tile.modelData).toLowerCase()
+                    color: "#FFFFFF"
+                    font.family: root.metroFont; font.pixelSize: tile.r.big ? 14 : 11
+                    elide: Text.ElideRight
+                  },
+                  // windows open (several) on medium tiles, bottom right
+                  Text {
+                    id: countT
+                    visible: tile.r.big && tile.windows.length > 1
+                    anchors.right: parent.right; anchors.rightMargin: 8
+                    anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                    textFormat: Text.PlainText; text: tile.windows.length
+                    color: "#FFFFFF"; font.family: root.metroFont; font.pixelSize: 14
+                  }
+                ]
+                // the back: what it's showing now, big and wrapped, with a small icon and the name below
+                backData: [
+                  Text {
+                    x: 10; y: 8
+                    width: parent.width - 20
+                    height: parent.height - 40
+                    textFormat: Text.PlainText
+                    text: tile.liveTitle
+                    wrapMode: Text.Wrap
+                    elide: Text.ElideRight
+                    maximumLineCount: tile.wideTile ? 2 : 3
+                    color: "#FFFFFF"
+                    font.family: root.metroFont; font.pixelSize: tile.wideTile ? 20 : 15; font.weight: Font.Light
+                  },
+                  IconImage {
+                    x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 6
+                    width: 16; height: 16
+                    source: tile.iconSrc
+                  },
+                  Text {
+                    x: 30; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                    width: parent.width - 38
+                    textFormat: Text.PlainText
+                    text: root.displayName(tile.modelData).toLowerCase() + (tile.windows.length > 1 ? " · " + tile.windows.length : "")
+                    color: "#FFFFFF"; elide: Text.ElideRight
+                    font.family: root.metroFont; font.pixelSize: 14
+                  }
+                ]
               }
               // unread count from the window title, top right
               Text {
@@ -6386,55 +6492,106 @@ Item {
               scale: stMouse.pressed ? 0.96 : 1
               transform: TileZoom { tid: stile.tid; tile: stile }
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
-              Text {
-                id: stVal
-                x: 8; y: stile.roomy ? 6 : 3
-                textFormat: Text.PlainText
-                text: stile.d.v
-                color: root.foreground
-                font.family: root.metroFont; font.weight: Font.Light
-                font.pixelSize: stile.roomy ? 48 : Math.min(30, Math.round(pinTiles.unit * 0.4))
+              readonly property bool wideTile: stile.r.w > pinTiles.unit * 2 + pinTiles.gap + 1
+              readonly property var backHist: stile.modelData.key === "net" ? root.txHistory : (root.statHistory[stile.modelData.key] || [])
+              LiveFace {
+                anchors.fill: parent
+                tid: stile.tid
+                big: stile.roomy && stile.r.w > pinTiles.unit + 1
+                wide: stile.wideTile
+                hasBack: stile.backHist.length > 1
+                frontData: [ stFront ]
+                backData: [ stBack ]
+              }
+              Item {
+                id: stFront
+                anchors.fill: parent
                 Text {
-                  anchors.left: parent.right; anchors.baseline: parent.baseline; anchors.leftMargin: 2
-                  textFormat: Text.PlainText; text: stile.d.unit
-                  color: stile.d.hot ? root.foreground : root.dim
-                  font.family: root.metroFont; font.pixelSize: stile.roomy ? 18 : 13
-                }
-              }
-              Text {
-                visible: stile.roomy && stile.d.l2 !== ""
-                x: 8; anchors.top: stVal.bottom; anchors.topMargin: -2
-                width: parent.width - 16
-                textFormat: Text.PlainText; text: stile.d.l2; elide: Text.ElideRight
-                color: root.dim; font.family: root.metroFont; font.pixelSize: 13
-              }
-              // the graph (network), along the bottom above the label
-              Row {
-                visible: stile.roomy && !!stile.d.hist
-                x: 8; width: parent.width - 16
-                anchors.bottom: stLabel.top; anchors.bottomMargin: 6
-                height: Math.round(parent.height * 0.28)
-                spacing: 1
-                readonly property var hist: stile.d.hist || []
-                readonly property real peak: Math.max.apply(null, [1].concat(hist))
-                Repeater {
-                  model: 24
-                  Rectangle {
-                    required property int index
-                    readonly property real v: { var h = parent.hist, i = index - (24 - h.length); return i >= 0 ? h[i] / parent.peak : 0 }
-                    width: Math.max(1, (parent.width - 23) / 24)
-                    height: Math.max(1, v * parent.height)
-                    y: parent.height - height
-                    color: v > 0 ? root.accent : root.faint
+                  id: stVal
+                  x: 8; y: stile.roomy ? 6 : 3
+                  textFormat: Text.PlainText
+                  text: stile.d.v
+                  color: root.foreground
+                  font.family: root.metroFont; font.weight: Font.Light
+                  font.pixelSize: stile.roomy ? 48 : Math.min(30, Math.round(pinTiles.unit * 0.4))
+                  Text {
+                    anchors.left: parent.right; anchors.baseline: parent.baseline; anchors.leftMargin: 2
+                    textFormat: Text.PlainText; text: stile.d.unit
+                    color: stile.d.hot ? root.foreground : root.dim
+                    font.family: root.metroFont; font.pixelSize: stile.roomy ? 18 : 13
                   }
                 }
+                Text {
+                  visible: stile.roomy && stile.d.l2 !== ""
+                  x: 8; anchors.top: stVal.bottom; anchors.topMargin: -2
+                  width: parent.width - 16
+                  textFormat: Text.PlainText; text: stile.d.l2; elide: Text.ElideRight
+                  color: root.dim; font.family: root.metroFont; font.pixelSize: 13
+                }
+                // the graph (network), along the bottom above the label
+                Row {
+                  visible: stile.roomy && !!stile.d.hist
+                  x: 8; width: parent.width - 16
+                  anchors.bottom: stLabel.top; anchors.bottomMargin: 6
+                  height: Math.round(parent.height * 0.28)
+                  spacing: 1
+                  readonly property var hist: stile.d.hist || []
+                  readonly property real peak: Math.max.apply(null, [1].concat(hist))
+                  Repeater {
+                    model: 24
+                    Rectangle {
+                      required property int index
+                      readonly property real v: { var h = parent.hist, i = index - (24 - h.length); return i >= 0 ? h[i] / parent.peak : 0 }
+                      width: Math.max(1, (parent.width - 23) / 24)
+                      height: Math.max(1, v * parent.height)
+                      y: parent.height - height
+                      color: v > 0 ? root.accent : root.faint
+                    }
+                  }
+                }
+                Text {
+                  id: stLabel
+                  x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                  textFormat: Text.PlainText; text: stile.d.label
+                  color: stile.d.hot ? root.foreground : root.dim
+                  font.family: root.metroFont; font.pixelSize: stile.roomy ? 14 : 12
+                }
               }
-              Text {
-                id: stLabel
-                x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
-                textFormat: Text.PlainText; text: stile.d.label
-                color: stile.d.hot ? root.foreground : root.dim
-                font.family: root.metroFont; font.pixelSize: stile.roomy ? 14 : 12
+              // the back: the last readings as a graph (network: the upload side)
+              Item {
+                id: stBack
+                anchors.fill: parent
+                readonly property var up: stile.modelData.key === "net" ? root.rateParts(root.txRate) : null
+                Text {
+                  id: stBackVal
+                  x: 8; y: 6
+                  textFormat: Text.PlainText
+                  text: stBack.up ? stBack.up[0] : Math.round(Math.max.apply(null, [0].concat(stile.backHist)))
+                  color: root.foreground
+                  font.family: root.metroFont; font.weight: Font.Light; font.pixelSize: 34
+                  Text {
+                    anchors.left: parent.right; anchors.baseline: parent.baseline; anchors.leftMargin: 2
+                    textFormat: Text.PlainText
+                    text: stBack.up ? String(stBack.up[1]).toLowerCase() + " up" : stile.d.unit + " peak"
+                    color: stile.d.hot ? root.foreground : root.dim
+                    font.family: root.metroFont; font.pixelSize: 14
+                  }
+                }
+                LiveBars {
+                  x: 8; width: parent.width - 16
+                  anchors.top: stBackVal.bottom; anchors.topMargin: 6
+                  anchors.bottom: stBackLabel.top; anchors.bottomMargin: 6
+                  hist: stile.backHist
+                  peak: stBack.up ? Math.max.apply(null, [1].concat(stile.backHist)) : 100
+                  barColor: stile.d.hot ? root.foreground : root.accent
+                }
+                Text {
+                  id: stBackLabel
+                  x: 8; anchors.bottom: parent.bottom; anchors.bottomMargin: 5
+                  textFormat: Text.PlainText; text: stile.d.label + " · recent"
+                  color: stile.d.hot ? root.foreground : root.dim
+                  font.family: root.metroFont; font.pixelSize: 14
+                }
               }
               MouseArea {
                 id: stMouse
