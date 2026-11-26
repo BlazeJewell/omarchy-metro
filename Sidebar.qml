@@ -2107,7 +2107,10 @@ Item {
       if (k === "section" && root.sectionTileIds.indexOf(id) === -1 && extras.indexOf(id) === -1) return
       seen[id] = true
       var d = root.defaultTileSize(id)
-      out.push({ id: id, w: clamp(t.w, 1, 4, d[0]), h: clamp(t.h, 1, 30, d[1]) })
+      var o = { id: id, w: clamp(t.w, 1, 4, d[0]), h: clamp(t.h, 1, 30, d[1]) }
+      // jake.metro: the column it was put in (so a small tile can sit under another one)
+      if (typeof t.c === "number" && !isNaN(t.c)) o.c = clamp(t.c, 0, 4 - o.w, 0)
+      out.push(o)
     })
     // the bottom row (quick settings lives there) is always there
     if (!seen.bottom) out.push({ id: "bottom", w: 4, h: 1 })
@@ -2118,7 +2121,8 @@ Item {
   }
   readonly property var tileIds: root.tileList.map(function(t) { return t.id })
   function tileOf(id) { return root.tileList.filter(function(t) { return t.id === id })[0] || null }
-  function setTiles(list) { root.setSetting("", "tiles", list.map(function(t) { return { id: t.id, w: t.w, h: t.h } })) }
+  function tileObj(t) { var o = { id: t.id, w: t.w, h: t.h }; if (typeof t.c === "number") o.c = t.c; return o }
+  function setTiles(list) { root.setSetting("", "tiles", list.map(root.tileObj)) }
   function addTile(id, w, h) {
     if (root.tileIds.indexOf(id) !== -1) { root.editSel = id; return }
     var d = root.defaultTileSize(id), list = root.tileList.slice()
@@ -2128,7 +2132,7 @@ Item {
     root.editSel = id
   }
   function resizeTile(id, w, h) {
-    root.setTiles(root.tileList.map(function(t) { return t.id === id ? { id: id, w: w, h: h } : t }))
+    root.setTiles(root.tileList.map(function(t) { return t.id === id ? root.tileObj({ id: id, w: w, h: h, c: t.c }) : t }))
   }
   function removeTile(id) {
     if (!id || id === "bottom") return
@@ -2296,7 +2300,7 @@ Item {
     var at = list.length && list[list.length - 1].id === "bottom" ? list.length - 1 : list.length
     var d = root.defaultTileSize(id)
     list.splice(at, 0, { id: id, w: d[0], h: d[1] })
-    next.tiles = list.map(function(t) { return { id: t.id, w: t.w, h: t.h } })
+    next.tiles = list.map(root.tileObj)
     root.saveSettings(next)
     root.editSection = id
     root.editSel = id
@@ -2313,7 +2317,7 @@ Item {
     var next = JSON.parse(JSON.stringify(root.userSettings))
     next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id })
     if (Array.isArray(next.order)) next.order = next.order.filter(function(x) { return x !== id })
-    next.tiles = root.tileList.filter(function(t) { return t.id !== id }).map(function(t) { return { id: t.id, w: t.w, h: t.h } })
+    next.tiles = root.tileList.filter(function(t) { return t.id !== id }).map(root.tileObj)
     delete next[id]
     root.saveSettings(next)
     if (root.editSection === id) root.editSection = "apps"
@@ -4357,10 +4361,11 @@ Item {
             height: Math.max(edFlick.height, implicitHeight)
             spacing: 12
 
-            Text { textFormat: Text.PlainText; text: "EDIT SIDEBAR"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
-            // Metro pivot: this section · sidebar · profiles
+            Text { textFormat: Text.PlainText; text: root.editTab === "section" && !root.addOpen ? (root.editSection === "apps" ? "EDIT TILES" : "EDIT TILE") : "EDIT SIDEBAR"; color: root.foreground; font.family: root.metroFont; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+            // Metro pivot: sidebar · profiles (jake.metro: only on the sidebar's own page;
+            // a tile's page shows just that tile)
             Item {
-              visible: !root.addOpen
+              visible: !root.addOpen && root.editTab !== "section"
               Layout.fillWidth: true
               Layout.preferredHeight: 46
               Layout.topMargin: -8
@@ -4370,7 +4375,7 @@ Item {
               Repeater {
                 // like a Windows Phone pivot: the current tab comes first, the rest follow it round
                 model: {
-                  var t = [["section", root.editSection === "apps" ? "tiles" : "this tile"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
+                  var t = [["sidebar", "sidebar"], ["profiles", "profiles"]]
                   var i = Math.max(0, t.map(function(x) { return x[0] }).indexOf(root.editTab))
                   return t.slice(i).concat(t.slice(0, i))
                 }
@@ -4985,7 +4990,8 @@ Item {
             RowLayout {
               Layout.fillWidth: true
               Text {
-                textFormat: Text.PlainText; text: "reset this widget"; color: resetMouse.containsMouse ? root.foreground : root.dim
+                visible: root.editTab === "section" && !root.addOpen   // jake.metro: a tile's, not the sidebar's
+                textFormat: Text.PlainText; text: "reset this tile"; color: resetMouse.containsMouse ? root.foreground : root.dim
                 font.family: root.metroFont; font.pixelSize: 13
                 MouseArea { id: resetMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.resetSection(root.editSection) }
               }
@@ -5110,7 +5116,7 @@ Item {
       property var dragSize: null
       readonly property var layoutTiles: {
         var list = win.dragOrder || root.tileList, ds = win.dragSize
-        if (ds) list = list.map(function(t) { return t.id === ds.id ? { id: t.id, w: ds.w, h: ds.h } : t })
+        if (ds) list = list.map(function(t) { return t.id === ds.id ? root.tileObj({ id: t.id, w: ds.w, h: ds.h, c: t.c }) : t })
         // searching: the results open under the search box; the tiles after it step aside
         if (win.searchHere) {
           var si = list.map(function(t) { return t.id }).indexOf("search")
@@ -5132,7 +5138,9 @@ Item {
         function free(c, r, w, h) { for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) if (used[(r + j) * 8 + c + i]) return false; return true }
         win.layoutTiles.forEach(function(t) {
           var w = Math.max(1, Math.min(4, t.w)), h = Math.max(1, t.h)
-          for (var r = 0; r < 4000; r++) for (var c = 0; c <= 4 - w; c++) if (free(c, r, w, h)) {
+          // jake.metro: a tile with a column (c) only goes in that column: the first free spot down it
+          var c0 = typeof t.c === "number" ? Math.max(0, Math.min(4 - w, t.c)) : 0, c1 = typeof t.c === "number" ? c0 : 4 - w
+          for (var r = 0; r < 4000; r++) for (var c = c0; c <= c1; c++) if (free(c, r, w, h)) {
             for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) used[(r + j) * 8 + c + i] = true
             tiles[t.id] = { x: c * (u + g), y: r * rs, w: w * u + (w - 1) * g, h: h * rs - g }
             return
@@ -5184,32 +5192,54 @@ Item {
         if (id === win.dragId) return { x: win.tileDragX, y: win.tileDragY, w: r.w, h: r.h }
         return r
       }
-      function tileScale(id) { return !win.editHere ? 1 : root.editSel === id ? 1.03 : (root.editSel !== "" ? 0.9 : 0.94) }
+      function tileScale(id) { return !win.editHere ? 1 : root.editSel === id ? 1 : (root.editSel !== "" ? 0.9 : 0.94) }
+      // jake.metro: edit mode zooms every tile out toward the grid's centre line (not each
+      // tile's own centre), so small and wide tiles keep the same edges and stay lined up
+      component TileZoom: Scale {
+        property string tid: ""
+        property Item tile: null
+        origin.x: tile ? tileGrid.width / 2 - tile.x : 0
+        origin.y: tile ? tile.height / 2 : 0
+        xScale: win.tileScale(tid)
+        yScale: xScale
+        Behavior on xScale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+      }
       function startTileDrag(id) {
         var r = win.tileRects.tiles[id]
         win.tileDragX = r ? r.x : 0; win.tileDragY = r ? r.y : 0
-        win.dragOrder = root.tileList.slice()
+        // jake.metro: every tile keeps the column it's in now, so only the dragged one moves
+        var u = win.tileUnit + win.tileGap
+        win.dragOrder = root.tileList.map(function(t) {
+          var rr = win.tileRects.tiles[t.id]
+          return root.tileObj({ id: t.id, w: t.w, h: t.h, c: rr ? Math.max(0, Math.min(4 - t.w, Math.round(rr.x / u))) : t.c })
+        })
         win.dragLastOver = ""
         win.dragId = id
       }
-      // over another tile: take its place (moving on, after it; moving back, before it)
+      // jake.metro: the dragged tile goes to the grid cell under it: its column is that
+      // cell's column, and it moves in the order to just before the first tile below or
+      // right of that cell (so a small tile can go under another small tile)
       function tileDragOver(px, py) {
-        var order = win.dragOrder, rects = win.tileRects.tiles, over = ""
+        var order = win.dragOrder
         if (!order) return
-        for (var i = 0; i < order.length; i++) {
-          var t = order[i]
-          if (t.id === win.dragId) continue
-          var r = rects[t.id]
-          if (r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) { over = t.id; break }
+        var ids = order.map(function(t) { return t.id }), from = ids.indexOf(win.dragId)
+        if (from < 0 || win.dragId === "bottom") return
+        var me = order[from], u = win.tileUnit + win.tileGap, rs = win.rowStep
+        var col = Math.max(0, Math.min(4 - me.w, Math.round(win.tileDragX / u)))
+        var row = Math.max(0, Math.round(win.tileDragY / rs))
+        var key = col + ":" + row
+        if (key === win.dragLastOver) return
+        win.dragLastOver = key
+        var rects = win.tileRects.tiles, ty = row * rs, tx = col * u
+        var rest = order.slice(); rest.splice(from, 1)
+        var at = rest.length
+        for (var i = 0; i < rest.length; i++) {
+          var r = rects[rest[i].id]
+          // after the cell: lower down, or in its row and reaching into or past its column
+          if (rest[i].id === "bottom" || (r && (r.y > ty + 1 || (Math.abs(r.y - ty) <= 1 && r.x + r.w > tx + 1)))) { at = i; break }
         }
-        if (over === win.dragLastOver) return
-        win.dragLastOver = over
-        if (!over) return
-        var ids = order.map(function(t) { return t.id })
-        var from = ids.indexOf(win.dragId), to = ids.indexOf(over)
-        var rest = order.slice(), me = rest.splice(from, 1)[0]
-        var at = rest.map(function(t) { return t.id }).indexOf(over)
-        rest.splice(from < to ? at + 1 : at, 0, me)
+        var moved = root.tileObj({ id: me.id, w: me.w, h: me.h, c: col })
+        rest.splice(at, 0, moved)
         win.dragOrder = rest
       }
       function endTileDrag() {
@@ -5246,14 +5276,14 @@ Item {
           width: r ? r.w : 0
           height: r ? r.h : 0
           z: win.dragId === tid ? 5 : 0
-          scale: win.tileScale(tid)
+          transform: TileZoom { tid: tbx.tid; tile: tbx }
           clip: true
           Behavior on x { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           Behavior on y { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           Behavior on width { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-          Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
-          Rectangle { anchors.fill: parent; visible: tbx.grounded; color: root.tileGround }
+          // jake.metro: in edit mode every tile gets its ground, so each reads as a block (Metro)
+          Rectangle { anchors.fill: parent; visible: tbx.grounded || win.editHere; color: root.tileGround }
           // hold (or right-click) a tile's empty space to edit
           MouseArea {
             anchors.fill: parent
@@ -5366,12 +5396,11 @@ Item {
             y: r ? r.y : 0
             width: r ? r.w : 0
             height: r ? r.h : 0
-            scale: win.tileScale(tid)
+            transform: TileZoom { tid: et.tid; tile: et }
             Behavior on x { enabled: !et.held; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             Behavior on y { enabled: !et.held; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
             Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-            Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
             // the others sink back while one is picked
             Rectangle {
               anchors.fill: parent
@@ -5379,22 +5408,14 @@ Item {
               opacity: root.editSel !== "" && !et.sel ? 0.5 : 0
               Behavior on opacity { NumberAnimation { duration: 140 } }
             }
-            // every tile outlined (some sit straight on the sidebar); the picked one in white
+            // jake.metro: no outlines or name tags (every tile has its ground in edit mode,
+            // like Windows Phone); only the picked one gets a white edge
             Rectangle {
+              visible: et.sel
               anchors.fill: parent
               color: "transparent"
-              border.width: et.sel ? 2 : 1
-              border.color: et.sel ? "#FFFFFF" : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
-            }
-            // what it is, for tiles that don't say
-            Rectangle {
-              visible: root.tileKind(et.tid) === "section" && et.height >= 30
-              x: et.sel ? et.bs + 8 : 4
-              y: 4
-              width: tagText.implicitWidth + 10
-              height: tagText.implicitHeight + 2
-              color: root.background
-              Text { id: tagText; anchors.centerIn: parent; textFormat: Text.PlainText; text: root.tileLabel(et.tid); color: root.foreground; font.family: root.metroFont; font.pixelSize: 11 }
+              border.width: 2
+              border.color: "#FFFFFF"
             }
             Text {
               visible: et.sizing
@@ -5437,7 +5458,8 @@ Item {
               onReleased: if (dragging) { dragging = false; win.endTileDrag() }
               onCanceled: if (dragging) { dragging = false; win.endTileDrag() }
               onDoubleClicked: root.openTileSettings(et.tid)
-              onClicked: function(m) { if (m.button === Qt.RightButton) root.openTileSettings(et.tid) }
+              // jake.metro: a right-click picks the tile (onPressed), the same as the right-click
+              // that started edit mode; its settings are the ⚙ button or a double-click
             }
             // ✕: take it off (an app tile is unpinned); the bottom row stays
             Rectangle {
@@ -5520,7 +5542,8 @@ Item {
           Repeater {
             model: {
               var paged = root.editPage || root.addOpen
-              return [["+", "add", "add"], [paged ? "‹" : "⚙", paged ? "back" : "settings", "page"], ["↺", "undo", "undo"], ["✕", "cancel", "cancel"], ["✓", "done", "save"]]
+              // jake.metro: the second button is the sidebar's own settings (a tile's are its ⚙)
+              return [["+", "add", "add"], [paged ? "‹" : "☰", paged ? "back" : "sidebar", "page"], ["↺", "undo", "undo"], ["✕", "cancel", "cancel"], ["✓", "done", "save"]]
             }
             Column {
               id: ebBtn
@@ -5544,7 +5567,7 @@ Item {
                   onClicked: {
                     var k = ebBtn.modelData[2]
                     if (k === "add") root.addOpen = !root.addOpen
-                    else if (k === "page") { if (root.editPage || root.addOpen) { root.editPage = false; root.addOpen = false } else root.openTileSettings(root.editSel) }
+                    else if (k === "page") { if (root.editPage || root.addOpen) { root.editPage = false; root.addOpen = false } else root.openTileSettings("") }
                     else if (k === "undo") root.undoEdit()
                     else if (k === "cancel") root.cancelEditing()
                     else root.saveEditing()
@@ -6260,7 +6283,8 @@ Item {
               Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
               color: root.accent
               // pressed tiles give a little, like Metro's tilt
-              scale: (tMouse.pressed && !tMouse.dragging ? 0.96 : 1) * win.tileScale(tid)
+              scale: tMouse.pressed && !tMouse.dragging ? 0.96 : 1
+              transform: TileZoom { tid: tile.tid; tile: tile }
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               border.width: focused || dropHere ? 2 : 0
               border.color: dropHere ? root.foreground : "#FFFFFF"
@@ -6359,7 +6383,8 @@ Item {
               Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
               clip: true
               color: d.hot ? root.accent : root.tileGround
-              scale: (stMouse.pressed ? 0.96 : 1) * win.tileScale(tid)
+              scale: stMouse.pressed ? 0.96 : 1
+              transform: TileZoom { tid: stile.tid; tile: stile }
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               Text {
                 id: stVal
@@ -6444,7 +6469,8 @@ Item {
               Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
               color: root.accent
               clip: true
-              scale: (wtMouse.pressed ? 0.96 : 1) * win.tileScale(tid)
+              scale: wtMouse.pressed ? 0.96 : 1
+              transform: TileZoom { tid: wtile.tid; tile: wtile }
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               MouseArea {
                 id: wtMouse
@@ -7189,7 +7215,11 @@ Item {
         Item {
           id: secBottom
           Layout.fillWidth: true
-          Layout.preferredHeight: 38
+          // jake.metro: as tall as its tile, and the round buttons fit inside it
+          // (with room for the edit-mode outline) instead of a fixed 34 px
+          readonly property real tileH: { var r = win.tileRects.tiles["bottom"]; return r ? r.h : 38 }
+          readonly property real btn: Math.round(Math.max(22, Math.min(34, tileH - 6)))
+          Layout.preferredHeight: tileH
 
           Flow {
             // Omarchy's widgets, kept loaded but hidden so their full panels
@@ -7251,8 +7281,8 @@ Item {
                 required property var modelData
                 required property int index
                 readonly property bool on: index === 0 ? win.qsHere : (win.qsHere && root.qsSection === modelData[1])
-                Layout.preferredWidth: 34
-                Layout.preferredHeight: 34
+                Layout.preferredWidth: secBottom.btn
+                Layout.preferredHeight: secBottom.btn
                 Layout.leftMargin: index === 0 ? 2 : 4
                 radius: width / 2
                 color: on ? root.foreground : (abMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent")
@@ -7288,6 +7318,7 @@ Item {
             // (a square one when the widget shows text), like Windows Phone's app bar
             Row {
               spacing: 8
+              Layout.rightMargin: 3
               Repeater {
                 model: !root.setting("bottom", "plugins") ? [] : root.pluginEntries.filter(function(e) { return !root.isHidden(e.id) && !root.widgetTileMap[e.id] })
                 Item {
@@ -7297,8 +7328,8 @@ Item {
                   // an icon gets a circle; a widget that shows text gets a square-cornered box
                   // (bar widgets carry some padding, so "wide" means clearly more than an icon)
                   readonly property bool wide: drawnW > 44
-                  width: phost.shown ? (wide ? drawnW + 14 : 34) : 0
-                  height: 34
+                  width: phost.shown ? (wide ? drawnW + 14 : secBottom.btn) : 0
+                  height: secBottom.btn
                   Rectangle {
                     anchors.fill: parent
                     radius: pcell.wide ? 0 : height / 2
