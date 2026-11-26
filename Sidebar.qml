@@ -1314,6 +1314,8 @@ Item {
 
   Process {
     id: qsPoll
+    // jake.metro: also at startup, so the toggles are already lit the first time it opens
+    running: true
     command: ["bash", "-c",
       "echo wifi $(nmcli radio wifi 2>/dev/null); " +
       "echo night $(omarchy-toggle-nightlight --status 2>/dev/null | jq -r .enabled); " +
@@ -7379,15 +7381,26 @@ Item {
 
       // -- quick settings: takes over the whole column above the bottom row (Metro's
       // Action Center), its content from the top, scrolling when it doesn't fit --
-      Rectangle {
-        id: qsOverlay
-        visible: win.qsHere
+      // jake.metro: slides up from the bottom row on open, back down on close; the
+      // clip keeps it off the bottom row while it moves
+      Item {
+        id: qsClip
         z: 20
-        readonly property real bottomY: win.bottomEdgeY
+        property real slide: win.qsHere ? 1 : 0
+        Behavior on slide { NumberAnimation { duration: root.winAnimMs; easing.type: Easing.Bezier; easing.bezierCurve: root.winAnimCurve } }
+        visible: slide > 0.001
         x: win.panelInnerX
         width: win.panelInnerW
-        y: win.panelInnerX
-        height: Math.max(0, bottomY - y)
+        // only as tall as its content (up to the whole column), sitting on the bottom row
+        readonly property real maxH: Math.max(0, win.bottomEdgeY - win.panelInnerX)
+        height: Math.min(maxH, settingsPanel.implicitHeight + 24)
+        y: win.bottomEdgeY - height
+        clip: true
+      Rectangle {
+        id: qsOverlay
+        width: parent.width
+        height: parent.height
+        y: Math.round(height * (1 - qsClip.slide))
         color: win.color.a < 1 ? root.background : win.color
         // swallow clicks and scrolls so they don't reach the sections underneath
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: function(w) { w.accepted = true } }
@@ -7952,6 +7965,7 @@ Item {
             }
           }
         }
+      }
       }
     }
   }
