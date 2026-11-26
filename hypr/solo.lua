@@ -1,10 +1,10 @@
 -- One app at a time, for the jake.metro plugin.
 --
 -- A tiled window that opens takes its workspace to itself: the other tiled
--- windows there slide out to the left and are minimized (to special:minimized,
--- where the sidebar lists them). Doing it here, as the window opens, means it is placed full
--- size straight away and slides in from the left like every other window,
--- instead of opening in a tile and then growing.
+-- windows there are minimized (to special:minimized, where the sidebar lists
+-- them). Doing it here, as the window opens, means it is placed full size
+-- straight away and pops in like every other window, instead of opening in a
+-- tile and then growing.
 --
 -- Left alone:
 --   * floating windows (dialogs, pickers)
@@ -52,8 +52,7 @@ hl.on("window.open", function(window)
   if #others == 0 then return end
   if take_tile_next() then return end
 
-  -- Lift them out of the layout right away so the new window is placed full
-  -- size, then slide them off to the left and hide them (minimize.sh).
+  -- Take them out of the layout right away so the new window is placed full size.
   -- A fullscreen one comes back fullscreen when restored from the sidebar
   -- (fsmem.sh). Hyprland has already taken it out of fullscreen by now, just
   -- before this window opened, so go by that.
@@ -66,67 +65,24 @@ hl.on("window.open", function(window)
     end
   end
 
-  -- The same slide as minimize.sh, done right here so it starts in the same
-  -- frame the new window opens (no script to start first). Each window is
-  -- lifted where it stands (animations off while Hyprland floats it, then
-  -- straight back to its tile's size and place), slides off the left edge as
-  -- it is, and once it's gone hops to special:minimized, unseen.
-  local function xy(v)
-    if type(v) ~= "table" then return nil end
-    return v.x or v[1], v.y or v[2]
-  end
-  local mon = window.monitor
-  local mx = mon and (mon.x or xy(mon.position))
-  local rl = mon and type(mon.reserved) == "table" and (mon.reserved.left or mon.reserved[1]) or 0
-  local parked, fallback = {}, {}
+  -- Hidden at once, as minimize.sh does: no slide. The new window pops in
+  -- (Hyprland's windowsIn) over the space they leave, like GNOME.
+  -- Moving a focused window away refocuses another; don't let that move the pointer.
+  local warps_off = hl.get_config("cursor.no_warps")
+  hl.config({ cursor = { no_warps = true } })
+  local hidden = {}
   for _, other in ipairs(others) do
     local w = "address:" .. other.address
-    local ax, ay = xy(other.at)
-    local aw, ah = xy(other.size)
+    -- the same tag Omarchy's minimize uses, so its dock knows where a window came from
+    hl.dispatch(hl.dsp.window.tag({ tag = "+omarchy-minimized-from-" .. ws.id, window = w }))
     hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = w }))
-    hl.dispatch(hl.dsp.window.float({ action = "on", window = w }))
-    if aw and ah and ax and ay and mx then
-      hl.dispatch(hl.dsp.window.resize({ x = aw, y = ah, window = w }))
-      hl.dispatch(hl.dsp.window.move({ x = ax, y = ay, window = w }))
-      -- the same tag Omarchy's minimize uses, so its dock knows where a window came from
-      hl.dispatch(hl.dsp.window.tag({ tag = "+omarchy-minimized-from-" .. ws.id, window = w }))
+    hl.dispatch(hl.dsp.window.move({ workspace = "special:minimized", follow = false, window = w }))
+    table.insert(hidden, w)
+  end
+  hl.config({ cursor = { no_warps = warps_off == true } })
+  hl.timer(function()
+    for _, w in ipairs(hidden) do
       hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = w }))
-      -- park with its right edge at the middle of the sidebar: hidden behind it, and
-      -- never out past its far (left) side; same height and size
-      local px = math.floor(mx + rl / 2 - aw)
-      hl.dispatch(hl.dsp.window.move({ x = px, y = ay, window = w }))
-      table.insert(parked, { w = w, x = px, y = ay })
-    else
-      table.insert(fallback, other.address)
     end
-  end
-  if #parked > 0 then
-    hl.timer(function()
-      -- moving a focused window away refocuses another; don't let that move the pointer
-      local warps_off = hl.get_config("cursor.no_warps")
-      hl.config({ cursor = { no_warps = true } })
-      for _, p in ipairs(parked) do
-        -- Moving onto the special workspace re-places it on screen; animations
-        -- off so it doesn't visibly slide back, then parked off the left edge
-        -- again so restoring slides it in from there.
-        hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "1", window = p.w }))
-        hl.dispatch(hl.dsp.window.move({ workspace = "special:minimized", follow = false, window = p.w }))
-        hl.dispatch(hl.dsp.window.move({ x = p.x, y = p.y, window = p.w }))
-      end
-      hl.config({ cursor = { no_warps = warps_off == true } })
-      hl.timer(function()
-        for _, p in ipairs(parked) do
-          hl.dispatch(hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", window = p.w }))
-        end
-      end, { timeout = 50, type = "oneshot" })
-    -- hidden as soon as its right edge is behind the sidebar (~200 ms into the
-    -- 379 ms ease-out move), not when the move ends: a window is far wider than
-    -- the sidebar, so while it creeps the last pixels its body shows in the gap
-    -- left of the sidebar
-    end, { timeout = 200, type = "oneshot" })
-  end
-  -- couldn't read a window's geometry here: let minimize.sh do it
-  if #fallback > 0 then
-    hl.exec_cmd("bash " .. os.getenv("HOME") .. "/.config/omarchy/plugins/jake.metro/minimize.sh " .. table.concat(fallback, " "))
-  end
+  end, { timeout = 50, type = "oneshot" })
 end)

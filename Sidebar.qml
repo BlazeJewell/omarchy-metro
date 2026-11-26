@@ -860,7 +860,7 @@ Item {
   // sends turns cursor warps off for itself (hbatch.sh), so focusing a window
   // from here doesn't drag the pointer out of the sidebar.
   readonly property string hbatchScript: Qt.resolvedUrl("hbatch.sh").toString().replace("file://", "")
-  function dispatchKeepCursor(steps, tail, head) {
+  function dispatchKeepCursor(steps, tail, head, fx) {
     var parts = []
     var batch = steps.map(function(s) { return "dispatch " + s }).join(" ; ")
     if (head) {
@@ -877,7 +877,8 @@ Item {
     if (tail) parts.push(tail)
     if (!parts.length) return
     var cmd = parts.join("; ")
-    root.run(cmd)
+    if (fx) root.startFx(fx, cmd)
+    else root.run(cmd)
   }
 
   // ---- one app at a time ------------------------------------------------------
@@ -889,6 +890,118 @@ Item {
   readonly property string fsmemScript: Qt.resolvedUrl("fsmem.sh").toString().replace("file://", "")
   readonly property string restoreScript: Qt.resolvedUrl("restore.sh").toString().replace("file://", "")
   function restoreCommand(ws, list) { return "bash " + Util.shellQuote(root.restoreScript) + " " + ws + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
+  // ---- window effects: GNOME-style minimize / restore ------------------------
+  // Hyprland has no animation for moving a window to special:minimized and
+  // back, so the sidebar draws one: a copy of each window (ScreencopyView) on
+  // an overlay (fxWin). Minimized windows shrink into the sidebar and restored
+  // ones grow out of it (400 ms ease-out-expo, as GNOME's minimize); windows
+  // being put away to make room either stay put behind it ("hold") or fade
+  // ("fade"). The scripts hide or place the real windows at once underneath:
+  // the copies are on screen first, then the command runs, then they move.
+  //   spec: { min: [addr], restore: [addr], clear: { ws, keep: [addr], mode } }
+  property var fx: null            // { items: [{ addr, mode, mon, x, y, w, h, tx, ty, tw, th }] }
+  property real fxT: 0
+  property var fxPending: null     // { spec, cmd }
+  property int fxNeeded: 0
+  property int fxReady: 0
+  property bool fxStarted: false
+  function startFx(spec, cmd) {
+    // one at a time; animations off -> straight through
+    if (root.winAnimMs <= 0 || root.fx !== null || root.fxPending !== null) { root.run(cmd); return }
+    root.fxPending = { spec: spec, cmd: cmd }
+    fxGeoProc.running = true
+  }
+  function toplevelFor(addr) {
+    var all = Hyprland.toplevels.values
+    for (var i = 0; i < all.length; i++) if (root.addrOf(all[i]) === addr) return all[i]
+    return null
+  }
+  function fxNoteReady() {
+    root.fxReady++
+    if (root.fxReady >= root.fxNeeded) fxGo.restart()
+  }
+  Process {
+    id: fxGeoProc
+    command: ["hyprctl", "-j", "--batch", "clients; monitors"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var p = root.fxPending, items = []
+        try {
+          // two JSON arrays back to back
+          var parts = text.replace(/\]\s*\[/, "]\u0001[").split("\u0001")
+          var list = JSON.parse(parts[0]), mons = JSON.parse(parts[1])
+          var focusedMon = (mons.filter(function(m) { return m.focused })[0] || {}).id
+          var sp = p.spec, clr = sp.clear || null
+          list.forEach(function(c) {
+            var mode = (sp.min || []).indexOf(c.address) >= 0 ? "min"
+                     : (sp.restore || []).indexOf(c.address) >= 0 ? "restore"
+                     : clr && c.workspace.id === clr.ws && !c.floating && clr.keep.indexOf(c.address) < 0 ? clr.mode : ""
+            if (!mode || !root.toplevelFor(c.address)) return
+            items.push({ addr: c.address, mode: mode, mon: mode === "restore" ? focusedMon : c.monitor,
+                         x: c.at[0], y: c.at[1], w: c.size[0], h: c.size[1],
+                         tx: c.at[0], ty: c.at[1], tw: c.size[0], th: c.size[1] })
+          })
+        } catch (e) { items = [] }
+        if (!items.length) { root.fxPending = null; root.run(p.cmd); return }
+        root.fxT = 0
+        root.fxStarted = false
+        root.fxNeeded = items.length
+        root.fxReady = 0
+        root.fx = { items: items }
+        fxWait.restart()
+      }
+    }
+  }
+  // copies that never get a frame don't hold things up
+  Timer { id: fxWait; interval: 250; onTriggered: fxGo.restart() }
+  // a frame or two for the copies to be on screen before the windows go
+  Timer {
+    id: fxGo; interval: 34
+    onTriggered: {
+      if (root.fxStarted || !root.fxPending) return
+      root.fxStarted = true
+      fxWait.stop()
+      fxRunProc.command = ["bash", "-c", "export SIDEBAR_FX=1; " + root.fxPending.cmd]
+      fxRunProc.running = true
+    }
+  }
+  Process {
+    id: fxRunProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        // restore.sh prints where the restored windows ended up
+        var geo = {}
+        String(text).split("\n").forEach(function(l) { if (l.charAt(0) === "{") { try { geo = JSON.parse(l) } catch (e) {} } })
+        var items = root.fx ? root.fx.items.slice() : []
+        items = items.filter(function(it) {
+          if (it.mode !== "restore") return true
+          var g = geo[it.addr]
+          if (!g) return false
+          it.tx = g.x; it.ty = g.y; it.tw = g.w; it.th = g.h
+          return true
+        })
+        root.fx = { items: items }
+        root.fxPending = null
+        fxAnim.restart()
+      }
+    }
+  }
+  NumberAnimation {
+    id: fxAnim
+    target: root; property: "fxT"; from: 0; to: 1
+    duration: Style.duration(400); easing.type: Easing.OutExpo
+    onFinished: {
+      // the restored windows themselves, now the copies sit exactly on them
+      var restored = root.fx ? root.fx.items.filter(function(it) { return it.mode === "restore" }) : []
+      if (restored.length)
+        root.run(". " + Util.shellQuote(root.hbatchScript) + "; hbatch " + Util.shellQuote(restored.map(function(it) {
+          return "dispatch hl.dsp.window.set_prop({ prop = \"opacity\", value = \"1\", window = \"address:" + it.addr + "\" })"
+        }).join(" ; ")))
+      fxEnd.restart()
+    }
+  }
+  // the copies go once Hyprland is showing the real windows again
+  Timer { id: fxEnd; interval: 120; onTriggered: { root.fx = null; root.fxT = 0 } }
   function fsRestore(list) { return "bash " + Util.shellQuote(root.fsmemScript) + " restore" + list.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("") }
   // The next new window tiles instead of opening alone (Shift+click, drag-and-drop):
   // a short-lived note read by hypr/solo.lua.
@@ -944,7 +1057,8 @@ Item {
   property string overviewMonitor: ""
   // 0 = previews sit on the real windows, 1 = zoomed out into the grid
   property real ovProgress: 0
-  Behavior on ovProgress { NumberAnimation { duration: Style.duration(280); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+  // GNOME's overview timing: 250ms ease-out-quad, both ways
+  Behavior on ovProgress { NumberAnimation { duration: Style.duration(250); easing.type: Easing.OutQuad } }
   property var ovGeometry: ({})
   function toggleOverview() {
     if (root.overviewOpen) { root.closeOverview(); return }
@@ -1005,16 +1119,20 @@ Item {
     var fromOverview = root.overviewOpen
     if (fromOverview) root.closeOverview()
     if (!fromOverview && !root.isMinimized(t) && t.activated) {
-      root.dispatchKeepCursor([], "bash " + Util.shellQuote(root.minimizeScript) + " " + Util.shellQuote(root.addrOf(t)))
+      root.dispatchKeepCursor([], "bash " + Util.shellQuote(root.minimizeScript) + " " + Util.shellQuote(root.addrOf(t)), "", { min: [root.addrOf(t)] })
       return
     }
     var mon = Hyprland.focusedMonitor
     var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
     var head = tile ? "" : root.clearCommand([t])
-    if (root.isMinimized(t)) { root.dispatchKeepCursor([], root.restoreCommand(here, [t]), head); return }
+    if (root.isMinimized(t)) {
+      root.dispatchKeepCursor([], root.restoreCommand(here, [t]), head,
+                              { restore: [root.addrOf(t)], clear: tile ? null : { ws: here, keep: [], mode: "hold" } })
+      return
+    }
     var steps = ["hl.dsp.focus({ " + root.windowTarget(t) + " })",
                  "hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })"]
-    root.dispatchKeepCursor(steps, root.fsRestore([t]), head)
+    root.dispatchKeepCursor(steps, root.fsRestore([t]), head, tile ? null : { clear: { ws: here, keep: [root.addrOf(t)], mode: "fade" } })
   }
   function closeWindow(t) {
     if (t) root.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.window.close({ " + root.windowTarget(t) + " })"))
@@ -1039,23 +1157,29 @@ Item {
     var steps = []
     var head = ""
     var park = ""
+    var fx = null
 
     if (focused && !fromOverview) {
-      // Slide them out to the left and hide them (minimize.sh).
+      // Hide them (minimize.sh); they shrink into the sidebar (startFx).
       head = ""
       park = "bash " + Util.shellQuote(root.minimizeScript) + visible.map(function(t) { return " " + Util.shellQuote(root.addrOf(t)) }).join("")
+      fx = { min: visible.map(root.addrOf) }
     } else if (visible.length > 0) {
       var t = visible[0]
-      if (!tile) head = root.clearCommand(visible)
+      if (!tile) {
+        head = root.clearCommand(visible)
+        fx = { clear: { ws: here, keep: visible.map(root.addrOf), mode: "fade" } }
+      }
       steps.push("hl.dsp.focus({ " + root.windowTarget(t) + " })")
       steps.push("hl.dsp.window.alter_zorder({ mode = \"top\", " + root.windowTarget(t) + " })")
     } else {
       if (!tile) head = root.clearCommand([])
-      // Parked off the left edge while minimized: tiling them again slides them in from there.
+      // they grow out of the sidebar over what was there (startFx)
       park = root.restoreCommand(here, hidden)
+      fx = { restore: hidden.map(root.addrOf), clear: tile ? null : { ws: here, keep: [], mode: "hold" } }
     }
     if (!park) park = root.fsRestore([visible[0]])
-    root.dispatchKeepCursor(steps, park, head)
+    root.dispatchKeepCursor(steps, park, head, fx)
   }
 
 
@@ -1092,6 +1216,8 @@ Item {
     function editSettings(id: string) { root.startEditing("", id); root.openTileSettings(id) }
     function editDone() { if (root.editing) root.saveEditing() }
     function overview() { root.toggleOverview() }
+    // a window by its Hyprland address, as a click on it in the sidebar (tile = Shift+click)
+    function activateWindow(address: string, tile: bool) { var t = root.toplevelFor(address); if (t) root.activateWindow(t, tile) }
     function settings(section: string) { root.openSettings(section) }
     function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
     function searchFor(text: string) { root.enterSearch(); root.query = text }
@@ -3069,9 +3195,9 @@ Item {
       }
 
       // -- overview (Super): every open window, zoomed out over the window area --
-      // Each preview starts exactly over its real window (minimized ones just off
-      // the left edge) and shrinks into the grid as the backdrop fades to opaque,
-      // so the windows look like they zoom out into it; closing reverses it.
+      // Like GNOME: the windows on screen zoom out from where they sit into the
+      // grid as the backdrop fades in; the rest (minimized, other workspaces) fade
+      // and grow in place. Nothing slides; closing reverses it.
       readonly property bool overviewHere: root.overviewMonitor === win.monitorName && (root.overviewOpen || root.ovProgress > 0)
       PanelWindow {
         id: overviewWin
@@ -3136,11 +3262,12 @@ Item {
         property real panX: 0
         readonly property real panTarget: Math.max(0, Math.min(totalW - (width - pad * 2), selCol * (colW + colGap) - (width - pad * 2 - colW) / 2))
         onPanTargetChanged: panX = panTarget
-        Behavior on panX { NumberAnimation { duration: Style.duration(260); easing.type: Easing.Bezier; easing.bezierCurve: Style.easeOut } }
+        // pans only while open: on opening it starts where it belongs, no slide
+        Behavior on panX { enabled: root.overviewOpen && overviewWin.p >= 1; NumberAnimation { duration: Style.duration(250); easing.type: Easing.OutQuad } }
         function firstOfCol(c) { for (var i = 0; i < slots.length; i++) if (slots[i].c === c) return i; return -1 }
         onQueryChanged: sel = 0
         onWsFilterChanged: sel = 0
-        onVisibleChanged: if (visible) { query = ""; wsFilter = 0; sel = 0 }
+        onVisibleChanged: if (visible) { query = ""; wsFilter = 0; sel = 0; panX = panTarget }
         function pickSelected() {
           var t = overviewWin.wins[overviewWin.sel]
           if (!t) return
@@ -3282,11 +3409,14 @@ Item {
             readonly property bool hidden: root.isMinimized(modelData)
             readonly property bool front: !hidden && modelData.activated
             readonly property var geo: root.ovGeometry[root.addrOf(modelData)] || null
+            // visible right now on this monitor: it zooms from its real spot; others fade in place
+            readonly property bool onScreen: !hidden && !!geo && !!modelData.workspace && !!(win.monitor && win.monitor.activeWorkspace)
+                                             && modelData.workspace.id === win.monitor.activeWorkspace.id
             // the window's own size and where it sits on screen (this window's coordinates)
             readonly property real srcW: geo ? geo.w : 1600
             readonly property real srcH: geo ? geo.h : 1000
-            readonly property real startX: hidden || !geo ? -srcW : geo.x - win.screen.x - overviewWin.inset
-            readonly property real startY: hidden || !geo ? (overviewWin.height - srcH) / 2 : geo.y - win.screen.y
+            readonly property real startX: onScreen ? geo.x - win.screen.x - overviewWin.inset : endX
+            readonly property real startY: onScreen ? geo.y - win.screen.y : endY
             // its slot in the panorama: its workspace's column, stacked down from the caption
             readonly property var slot: overviewWin.slots[index] || { c: 0, r: 0 }
             readonly property int col: slot.c
@@ -3308,10 +3438,10 @@ Item {
               // follows the pointer (a little smaller) while it's being dragged
               x: cell.dragged ? overviewWin.dragX - cell.grabX : overviewWin.lerp(cell.startX, cell.endX) - 4
               y: cell.dragged ? overviewWin.dragY - cell.grabY : overviewWin.lerp(cell.startY, cell.endY) - 4
-              width: overviewWin.lerp(cell.srcW, cell.endW) + 8
-              height: overviewWin.lerp(cell.srcH, cell.endH) + 8
-              scale: cell.dragged ? 0.85 : 1
-              opacity: cell.dragged ? 0.9 : 1
+              width: (cell.onScreen ? overviewWin.lerp(cell.srcW, cell.endW) : cell.endW) + 8
+              height: (cell.onScreen ? overviewWin.lerp(cell.srcH, cell.endH) : cell.endH) + 8
+              scale: cell.dragged ? 0.85 : cell.onScreen ? 1 : 0.9 + 0.1 * overviewWin.p
+              opacity: cell.dragged ? 0.9 : cell.onScreen ? 1 : overviewWin.p
               Behavior on scale { NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic } }
               radius: 0
               color: cellMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
@@ -3409,6 +3539,59 @@ Item {
                 if (!(t.activated && !root.isMinimized(t))) root.activateWindow(t, root.shiftHeld)
               }
             }
+          }
+        }
+      }
+
+      // -- window effects (root.startFx): the copies of windows on this monitor --
+      readonly property var fxItems: root.fx && win.monitor ? root.fx.items.filter(function(it) { return it.mon === win.monitor.id }) : []
+      PanelWindow {
+        id: fxWin
+        screen: win.screen
+        visible: win.fxItems.length > 0
+        color: "transparent"
+        anchors { top: true; bottom: true; left: true; right: true }
+        exclusionMode: ExclusionMode.Ignore
+        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.namespace: "jake-metro-fx"
+        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+        mask: Region {}      // clicks go straight through
+        // where a window goes into / comes out of the sidebar: small, on the panel
+        readonly property real dockX: win.tucked ? 0 : root.sidebarWidth / 2
+        Repeater {
+          model: win.fxItems
+          ScreencopyView {
+            id: copy
+            required property var modelData
+            readonly property var it: modelData
+            readonly property real t: root.fxT
+            readonly property real ox: win.screen ? win.screen.x : 0
+            readonly property real oy: win.screen ? win.screen.y : 0
+            // the window's own rect, and the small one on the sidebar
+            readonly property real ax: it.mode === "restore" ? it.tx - ox : it.x - ox
+            readonly property real ay: it.mode === "restore" ? it.ty - oy : it.y - oy
+            readonly property real aw: it.mode === "restore" ? it.tw : it.w
+            readonly property real ah: it.mode === "restore" ? it.th : it.h
+            readonly property real k: Math.min(64 / aw, 64 / ah)
+            readonly property real bw: aw * k
+            readonly property real bh: ah * k
+            readonly property real bx: fxWin.dockX - bw / 2
+            readonly property real by: Math.max(0, Math.min(fxWin.height - bh, ay + ah / 2 - bh / 2))
+            // 0 = full size where the window is, 1 = small on the sidebar
+            readonly property real d: it.mode === "min" ? t : it.mode === "restore" ? 1 - t : 0
+            x: ax + (bx - ax) * d
+            y: ay + (by - ay) * d
+            width: aw + (bw - aw) * d
+            height: ah + (bh - ah) * d
+            z: it.mode === "restore" ? 2 : it.mode === "min" ? 1 : 0
+            opacity: !hasContent ? 0
+                   : it.mode === "fade" ? 1 - t
+                   : it.mode === "min" ? Math.min(1, (1 - t) * 4)
+                   : it.mode === "restore" ? Math.min(1, t * 4) : 1
+            captureSource: { var tl = root.toplevelFor(it.addr); return tl ? tl.wayland : null }
+            live: true
+            property bool counted: false
+            onHasContentChanged: if (hasContent && !counted) { counted = true; root.fxNoteReady() }
           }
         }
       }

@@ -11,9 +11,17 @@ hl.config({
   },
 })
 
--- Windows slide in from the left (out of the sidebar) and slide back out to it.
-hl.animation({ leaf = "windowsIn", enabled = true, speed = 4.1, bezier = "easeOutQuint", style = "slide left" })
-hl.animation({ leaf = "windowsOut", enabled = true, speed = 2.5, bezier = "easeInOutCubic", style = "slide left" })
+-- Opening and closing windows the way GNOME does (gnome-shell windowManager.js):
+-- a new window grows from half size as it fades in (150 ms, ease-out-expo); a
+-- closing one shrinks to 80% as it fades out (150 ms, ease-out-quad).
+-- Minimizing and restoring are drawn by the sidebar itself (Sidebar.qml,
+-- "window effects"): Hyprland has no animation for those.
+hl.curve("gnomeOutExpo", { type = "bezier", points = { { 0.16, 1 }, { 0.3, 1 } } })
+hl.curve("gnomeOutQuad", { type = "bezier", points = { { 0.25, 0.46 }, { 0.45, 0.94 } } })
+hl.animation({ leaf = "windowsIn", enabled = true, speed = 1.5, bezier = "gnomeOutExpo", style = "popin 50%" })
+hl.animation({ leaf = "fadeIn", enabled = true, speed = 1.5, bezier = "gnomeOutExpo" })
+hl.animation({ leaf = "windowsOut", enabled = true, speed = 1.5, bezier = "gnomeOutQuad", style = "popin 80%" })
+hl.animation({ leaf = "fadeOut", enabled = true, speed = 1.5, bezier = "gnomeOutQuad" })
 
 -- Window corners and borders: set in the sidebar's editor (Whole sidebar ›
 -- Windows), saved in ~/.config/omarchy/metro-settings.json; rounded corners
