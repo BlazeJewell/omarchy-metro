@@ -1090,9 +1090,12 @@ Item {
     function quickSettings() { root.toggleQuickSettings() }
     function launchPinned(n: int) { root.launchPinned(n) }
     function edit() { if (root.editing) root.stopEditing(); else root.startEditing() }
-    function editTab(tab: string) { if (!root.editing) root.startEditing(); root.editTab = tab }
+    function editTab(tab: string) { if (!root.editing) root.startEditing(); root.editTab = tab; root.addOpen = false; root.editPage = true }
     function editAdd() { if (!root.editing) root.startEditing(); root.addOpen = true }
-    function editWidget(id: string) { if (!root.editing) root.startEditing(); root.editSection = id }
+    // edit mode with a tile picked: "clock", "search", "app:firefox", "sys:cpu", ...
+    function editWidget(id: string) { root.startEditing("", id); root.editSel = id }
+    function editSettings(id: string) { root.startEditing("", id); root.openTileSettings(id) }
+    function editDone() { if (root.editing) root.saveEditing() }
     function overview() { root.toggleOverview() }
     function settings(section: string) { root.openSettings(section) }
     function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
@@ -1862,6 +1865,7 @@ Item {
     onLoaded: { try { var v = JSON.parse(text()); if (v && typeof v === "object") root.userSettings = root.migrateTray(root.migrateSettings(v)) } catch (e) {} }
   }
   function setting(section, key) {
+    if (key === "show" && root.isTileSection(section)) return root.tileIds.indexOf(section) !== -1
     var u = root.userSettings[section]
     if (u && u[key] !== undefined) return u[key]
     var d = root.settingsDefaults[section]
@@ -1995,7 +1999,16 @@ Item {
       }
     }
   }
+  function isTileSection(id) { return root.sectionTileIds.indexOf(id) !== -1 || String(id).indexOf("w:") === 0 }
+  // "show" from before tiles (what the old layout had on), read from the file itself
+  function rawShow(id) {
+    var u = root.userSettings[id]
+    if (u && u.show !== undefined) return u.show !== false
+    var d = root.settingsDefaults[id]
+    return !(d && d.show === false)
+  }
   function setSetting(section, key, value) {
+    if (key === "show" && root.isTileSection(section)) { if (value === false) root.removeTile(section); else root.addTile(section); return }
     var next = JSON.parse(JSON.stringify(root.userSettings))
     if (section === "") next[key] = value
     else { next[section] = next[section] || {}; next[section][key] = value }
@@ -2007,33 +2020,155 @@ Item {
     root.saveSettings(next)
   }
   // A section hidden in the settings still shows (faded) while editing, so it can be turned back on.
-  function sectionShown(section) { return root.setting(section, "show") !== false }
-  function sectionOpacity(section) { return root.setting(section, "show") === false ? 0.35 : 1 }
+  function sectionShown(section) { return root.tileIds.indexOf(section) !== -1 }
+  function sectionOpacity(section) { return 1 }
   // a little taller when apps show a hint line under their name
   readonly property int rowH: (root.setting("apps", "compact") ? 34 : 44) + (root.setting("apps", "hints") !== false ? 6 : 0)
   // Metro: pinned apps as tiles above the list of other running apps
-  readonly property bool tilesOn: root.setting("apps", "tiles") !== false
+  readonly property bool tilesOn: true
   // running apps: a fixed height (0 = fit them all; it scrolls when they don't fit), set by
   // dragging its bottom edge in edit mode; runMaxDrag is the live value while dragging
   property int runMaxDrag: -1
   readonly property int runMaxH: runMaxDrag >= 0 ? runMaxDrag : Math.max(0, Number(root.setting("running", "maxH") || 0))
   readonly property int bigTiles: Math.max(0, Number(root.setting("apps", "bigTiles") || 0))
-  // plugin widgets pinned as live tiles: { "<plugin id>": "small" | "medium" | "wide" }
-  readonly property var widgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
-  readonly property var widgetTiles: root.allPluginEntries.filter(function(e) { var z = root.widgetTileMap[e.id]; return z === "small" || z === "medium" || z === "wide" })
-                                       .map(function(e) { return { id: String(e.id), size: root.widgetTileMap[e.id], entry: e } })
-  // system performance as tiles: { cpu|mem|disk|gpu|vram|temp|net: "small" | "medium" | "wide" }
-  readonly property var systemTileKeys: [["cpu", "cpu"], ["mem", "memory"], ["disk", "disk"], ["gpu", "gpu"], ["vram", "gpu memory"], ["temp", "gpu temperature"], ["net", "network"]]
-  readonly property var systemTileMap: { var m = root.setting("apps", "systemTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
-  readonly property var systemTiles: root.systemTileKeys.filter(function(k) {
-      var z = root.systemTileMap[k[0]]
-      return (z === "small" || z === "medium" || z === "wide") && (["gpu", "vram", "temp"].indexOf(k[0]) === -1 || root.gpuFound)
-    }).map(function(k) { return { key: k[0], size: root.systemTileMap[k[0]] } })
-  function setSystemTile(key, size) {
-    var m = Object.assign({}, root.systemTileMap)
-    m[key] = size
-    root.setSetting("apps", "systemTiles", m)
+  // ---- tiles: everything in the column is a tile ----------------------------------
+  // Saved as settings.tiles = [{ id, w, h }] in the order they pack into a 4-column grid:
+  // w in columns (1-4), h in half-rows (a small tile is 1x2, medium 2x4, wide 4x4).
+  // Ids: a section ("clock", "search", ..., "w:<widget>"), "sys:<cpu|mem|...>",
+  // "app:<pin key>" (a pinned app) or "wt:<plugin id>" (a plugin's widget, live).
+  // Before there's a saved list, it's made from the old layout (legacyTiles).
+  readonly property var sectionTileIds: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "running", "tray", "bottom"]
+  readonly property var tileDefaults: ({ clock: [4, 2], status: [4, 1], system: [4, 4], workspaces: [4, 1], search: [4, 1], media: [4, 3], notifications: [4, 5], running: [4, 5], tray: [4, 1], bottom: [4, 1] })
+  // sections drawn on a tile ground; the others sit straight on the sidebar, as before
+  readonly property var groundedTiles: ["system", "media", "notifications"]
+  function tileKind(id) { id = String(id); return id.indexOf("sys:") === 0 ? "sys" : id.indexOf("app:") === 0 ? "app" : id.indexOf("wt:") === 0 ? "wt" : "section" }
+  function sizeCells(z) { return z === "wide" ? [4, 4] : z === "medium" ? [2, 4] : [1, 2] }
+  function sizeName(w, h) { return w >= 4 ? "wide" : (w >= 2 || h >= 4) ? "medium" : "small" }
+  function defaultTileSize(id) { var d = root.tileDefaults[id]; return d ? d : String(id).indexOf("w:") === 0 ? [4, 6] : [1, 2] }
+  function tileLabel(id) {
+    var k = root.tileKind(id)
+    if (k === "sys") { var s = root.systemTileKeys.filter(function(x) { return x[0] === id.slice(4) })[0]; return s ? s[1] : id }
+    if (k === "app") { var r = root.appItems("").filter(function(x) { return x.pinned && x.key === id.slice(4) })[0]; return r ? root.displayName(r).toLowerCase() : id.slice(4) }
+    if (k === "wt") return root.widgetName(id.slice(3)).toLowerCase()
+    if (String(id).indexOf("w:") === 0) return root.widgetName(root.widgetOf(id)).toLowerCase()
+    var e = root.editSections.filter(function(x) { return x.id === id })[0]
+    return e ? String(e.label).toLowerCase() : id
   }
+  // the old settings: tiles by size name, the first few pins medium
+  readonly property var legacyWidgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
+  readonly property var legacySystemTileMap: { var m = root.setting("apps", "systemTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
+  readonly property var legacyTiles: {
+    var out = []
+    root.sectionOrder.forEach(function(id) {
+      if (id === "apps") {
+        root.systemTileKeys.forEach(function(k) {
+          var z = root.legacySystemTileMap[k[0]]
+          if (z === "small" || z === "medium" || z === "wide") { var c = root.sizeCells(z); out.push({ id: "sys:" + k[0], w: c[0], h: c[1] }) }
+        })
+        if (root.setting("apps", "tiles") !== false) root.pinnedIds.forEach(function(p, i) {
+          var big = i < root.bigTiles
+          out.push({ id: "app:" + root.pinKey(p), w: big ? 2 : 1, h: big ? 4 : 2 })
+        })
+        for (var wid in root.legacyWidgetTileMap) {
+          var wz = root.legacyWidgetTileMap[wid]
+          if (wz === "small" || wz === "medium" || wz === "wide") { var wc = root.sizeCells(wz); out.push({ id: "wt:" + wid, w: wc[0], h: wc[1] }) }
+        }
+        return
+      }
+      if (!root.rawShow(id) && id !== "bottom") return
+      var d = root.defaultTileSize(id)
+      out.push({ id: id, w: d[0], h: d[1] })
+    })
+    return out
+  }
+  // pins that can be drawn (an app that's gone has no tile)
+  readonly property var pinnedTileKeys: {
+    var rev = DesktopEntries.applications.values.length
+    return root.pinnedIds.filter(function(p) { return p && typeof p === "object" ? !!p["class"] : !!DesktopEntries.byId(String(p)) })
+                         .map(function(p) { return root.pinKey(p) })
+  }
+  readonly property var tileList: {
+    var saved = Array.isArray(root.userSettings.tiles) ? root.userSettings.tiles : null
+    var src = saved || root.legacyTiles
+    var pins = root.pinnedTileKeys
+    var extras = root.extraSections.map(function(e) { return e.id })
+    var plugins = root.allPluginEntries.map(function(e) { return String(e.id) })
+    var sysKeys = root.systemTileKeys.map(function(k) { return k[0] })
+    var seen = {}, out = []
+    function clamp(v, lo, hi, d) { v = Math.round(Number(v)); return isNaN(v) ? d : Math.max(lo, Math.min(hi, v)) }
+    src.forEach(function(t) {
+      if (!t || typeof t.id !== "string" || seen[t.id]) return
+      var id = t.id, k = root.tileKind(id)
+      if (k === "app" && pins.indexOf(id.slice(4)) === -1) return
+      if (k === "sys" && (sysKeys.indexOf(id.slice(4)) === -1 || (["gpu", "vram", "temp"].indexOf(id.slice(4)) !== -1 && !root.gpuFound))) return
+      if (k === "wt" && plugins.indexOf(id.slice(3)) === -1) return
+      if (k === "section" && root.sectionTileIds.indexOf(id) === -1 && extras.indexOf(id) === -1) return
+      seen[id] = true
+      var d = root.defaultTileSize(id)
+      out.push({ id: id, w: clamp(t.w, 1, 4, d[0]), h: clamp(t.h, 1, 30, d[1]) })
+    })
+    // the bottom row (quick settings lives there) is always there
+    if (!seen.bottom) out.push({ id: "bottom", w: 4, h: 1 })
+    // pinned somewhere else (the running list, a menu): its tile joins before the bottom row
+    var at = out.length && out[out.length - 1].id === "bottom" ? out.length - 1 : out.length
+    pins.forEach(function(p) { if (!seen["app:" + p]) { seen["app:" + p] = true; out.splice(at++, 0, { id: "app:" + p, w: 1, h: 2 }) } })
+    return out
+  }
+  readonly property var tileIds: root.tileList.map(function(t) { return t.id })
+  function tileOf(id) { return root.tileList.filter(function(t) { return t.id === id })[0] || null }
+  function setTiles(list) { root.setSetting("", "tiles", list.map(function(t) { return { id: t.id, w: t.w, h: t.h } })) }
+  function addTile(id, w, h) {
+    if (root.tileIds.indexOf(id) !== -1) { root.editSel = id; return }
+    var d = root.defaultTileSize(id), list = root.tileList.slice()
+    var at = list.length && list[list.length - 1].id === "bottom" ? list.length - 1 : list.length
+    list.splice(at, 0, { id: id, w: w || d[0], h: h || d[1] })
+    root.setTiles(list)
+    root.editSel = id
+  }
+  function resizeTile(id, w, h) {
+    root.setTiles(root.tileList.map(function(t) { return t.id === id ? { id: id, w: w, h: h } : t }))
+  }
+  function removeTile(id) {
+    if (!id || id === "bottom") return
+    var k = root.tileKind(id)
+    if (String(id).indexOf("w:") === 0) { root.removeWidgetSection(id); return }
+    root.setTiles(root.tileList.filter(function(t) { return t.id !== id }))
+    // an app tile is its pin
+    if (k === "app") root.setPins(root.pinnedIds.filter(function(p) { return root.pinKey(p) !== id.slice(4) }))
+    if (root.editSel === id) root.editSel = ""
+  }
+  // the pins file keeps the tiles' order (Super+Alt+1-9 launch pins by number)
+  function syncPinsToTiles() {
+    var order = root.tileList.filter(function(t) { return root.tileKind(t.id) === "app" }).map(function(t) { return t.id.slice(4) })
+    function at(p) { var i = order.indexOf(root.pinKey(p)); return i < 0 ? 1e6 : i }
+    var list = root.pinnedIds.slice().sort(function(a, b) { return at(a) - at(b) })
+    if (JSON.stringify(list) !== JSON.stringify(root.pinnedIds)) root.setPins(list)
+  }
+  // what the rest of the sidebar reads: the live tiles and their size names
+  readonly property var widgetTileMap: {
+    var m = {}
+    root.tileList.forEach(function(t) { if (root.tileKind(t.id) === "wt") m[t.id.slice(3)] = root.sizeName(t.w, t.h) })
+    return m
+  }
+  readonly property var widgetTiles: root.tileList.filter(function(t) { return root.tileKind(t.id) === "wt" }).map(function(t) {
+      var id = t.id.slice(3)
+      return { id: id, size: root.sizeName(t.w, t.h), entry: root.allPluginEntries.filter(function(e) { return String(e.id) === id })[0] || {} }
+    })
+  // system performance as tiles: cpu|mem|disk|gpu|vram|temp|net
+  readonly property var systemTileKeys: [["cpu", "cpu"], ["mem", "memory"], ["disk", "disk"], ["gpu", "gpu"], ["vram", "gpu memory"], ["temp", "gpu temperature"], ["net", "network"]]
+  readonly property var systemTileMap: {
+    var m = {}
+    root.tileList.forEach(function(t) { if (root.tileKind(t.id) === "sys") m[t.id.slice(4)] = root.sizeName(t.w, t.h) })
+    return m
+  }
+  readonly property var systemTiles: root.tileList.filter(function(t) { return root.tileKind(t.id) === "sys" })
+    .map(function(t) { return { key: t.id.slice(4), size: root.sizeName(t.w, t.h) } })
+  function setSizedTile(id, size) {
+    if (size === "off") { root.removeTile(id); return }
+    var c = root.sizeCells(size)
+    if (root.tileIds.indexOf(id) === -1) root.addTile(id, c[0], c[1]); else root.resizeTile(id, c[0], c[1])
+  }
+  function setSystemTile(key, size) { root.setSizedTile("sys:" + key, size) }
   // what a system tile shows: a big number, its unit, a label, an optional second line and graph
   function sysTileData(key) {
     if (key === "net") {
@@ -2046,11 +2181,7 @@ Item {
     var l2 = key === "mem" ? "" : key === "vram" ? Math.round(root.vramUsed / 1024 * 10) / 10 + " of " + Math.round(root.vramTotal / 1024) + " gb" : ""
     return { v: Math.round(v), unit: key === "temp" ? "°" : "%", label: label, l2: l2, hist: null, hot: key !== "temp" && v >= 85 }
   }
-  function setWidgetTile(id, size) {
-    var m = Object.assign({}, root.widgetTileMap)
-    if (size === "off") delete m[id]; else m[id] = size
-    root.setSetting("apps", "widgetTiles", m)
-  }
+  function setWidgetTile(id, size) { root.setSizedTile("wt:" + id, size) }
   // Order of the sections down the sidebar (dragged in edit mode).
   readonly property var defaultOrder: ["clock", "status", "system", "workspaces", "search", "media", "notifications", "apps", "running", "tray", "bottom"]
   readonly property var sectionOrder: {
@@ -2085,28 +2216,50 @@ Item {
     { id: "search", label: "SEARCH" }, { id: "media", label: "MEDIA" }, { id: "notifications", label: "NOTIFICATIONS" },
     { id: "apps", label: "TILES" }, { id: "running", label: "RUNNING APPS" }, { id: "tray", label: "TRAY" }, { id: "bottom", label: "PLUGINS" }
   ].concat(root.extraSections.map(function(e) { return { id: e.id, label: root.widgetName(root.widgetOf(e.id)).toUpperCase() } }))
-  function startEditing(monitorName) {
-    root.closeOverview()     // it covers the window area, where the editor opens
+  // Edit mode happens in the column itself, like Windows Phone's Start screen: hold a
+  // tile (or quick settings › edit sidebar), then drag tiles about, drag a corner to
+  // resize, ✕ to take one off, ⚙ for its settings (a page that takes over the column).
+  property string editSel: ""          // the picked tile
+  property bool editPage: false        // the settings page is open over the tiles
+  property var editPinsSnapshot: []
+  function startEditing(monitorName, tileId) {
+    if (root.editing) { if (tileId) root.editSel = tileId; return }
+    root.closeOverview()     // it covers the window area
     root.closeQuickSettings()
     root.exitSearch()
     root.closeTrayMenu()
     root.closeDockedPanel()
+    root.calendarOpen = false
     root.editMonitor = monitorName || (Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : "")
     root.editSnapshot = JSON.parse(JSON.stringify(root.userSettings))
+    root.editPinsSnapshot = root.pinnedIds.slice()
     root.editHistory = []
     root.profileNaming = false
+    root.editPage = false
+    root.addOpen = false
+    root.editSel = tileId || ""
     root.editing = true
-    edSlide.y = win.screen.height    // slide up into place
-    edSlideAnim.from = win.screen.height; edSlideAnim.to = 0; edSlideAnim.start()
   }
   property var editSnapshot: ({})
-  // the editor slides down before the window goes away; guard re-entry mid-slide
   property bool edClosing: false
   function closeEditor(save) {
-    if (root.edClosing) return
-    root.edClosing = true
-    if (save) root.writeSettings(); else root.userSettings = root.editSnapshot
-    edSlideAnim.from = edSlide.y; edSlideAnim.to = win.screen.height; edSlideAnim.start()
+    if (save) { root.syncPinsToTiles(); root.writeSettings() }
+    else {
+      root.userSettings = root.editSnapshot
+      if (JSON.stringify(root.pinnedIds) !== JSON.stringify(root.editPinsSnapshot)) root.setPins(root.editPinsSnapshot)
+    }
+    root.editPage = false
+    root.addOpen = false
+    root.editSel = ""
+    root.editing = false
+  }
+  // which settings a tile opens: its section's, or the tiles' (system, app and live tiles)
+  function sectionForTile(id) { return root.tileKind(id) === "section" ? id : "apps" }
+  function openTileSettings(id) {
+    if (id) { root.editSel = id; root.editSection = root.sectionForTile(id); root.editTab = "section" }
+    else root.editTab = "sidebar"
+    root.addOpen = false
+    root.editPage = true
   }
   function saveEditing() { root.closeEditor(true) }
   function cancelEditing() { root.closeEditor(false) }
@@ -2137,12 +2290,14 @@ Item {
     var id = "w:" + wid
     var next = JSON.parse(JSON.stringify(root.userSettings))
     next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id }).concat([{ id: id }])
-    var order = root.sectionOrder.filter(function(x) { return x !== id })
-    var at = order.indexOf("bottom")
-    order.splice(at < 0 ? order.length : at, 0, id)
-    next.order = order
+    var list = root.tileList.filter(function(t) { return t.id !== id })
+    var at = list.length && list[list.length - 1].id === "bottom" ? list.length - 1 : list.length
+    var d = root.defaultTileSize(id)
+    list.splice(at, 0, { id: id, w: d[0], h: d[1] })
+    next.tiles = list.map(function(t) { return { id: t.id, w: t.w, h: t.h } })
     root.saveSettings(next)
     root.editSection = id
+    root.editSel = id
     root.addOpen = false
     // a plugin given a section of its own leaves the Plugins row
     if (root.allPluginEntries.some(function(e) { return e.id === wid }) && root.pluginPlaces[wid] !== "section") {
@@ -2156,21 +2311,21 @@ Item {
     var next = JSON.parse(JSON.stringify(root.userSettings))
     next.extras = (Array.isArray(next.extras) ? next.extras : []).filter(function(e) { return e.id !== id })
     if (Array.isArray(next.order)) next.order = next.order.filter(function(x) { return x !== id })
+    next.tiles = root.tileList.filter(function(t) { return t.id !== id }).map(function(t) { return { id: t.id, w: t.w, h: t.h } })
     delete next[id]
     root.saveSettings(next)
     if (root.editSection === id) root.editSection = "apps"
+    if (root.editSel === id) root.editSel = ""
   }
   readonly property var defaultSectionDesc: ({ tray: "Tray icons of running apps", status: "Indicators, update available, keyboard layout and battery", media: "Now playing, with play/pause, skip and seek", notifications: "Your latest notifications, and Do not disturb" })
   property bool addOpen: false
   // Metro editor: "section" (the picked section), "sidebar" (the whole column), "profiles"
   property string editTab: "section"
   onEditSectionChanged: root.editTab = "section"
-  onEditingChanged: if (!editing) addOpen = false
+  onEditingChanged: if (!editing) { addOpen = false; editPage = false }
   function removeSection(id) {
-    if (!id || id === "bottom") return
-    if (String(id).indexOf("w:") === 0) root.removeWidgetSection(id)
-    else root.setSetting(id, "show", false)
-    if (root.editSection === id) root.editSection = "apps"
+    root.removeTile(id)
+    if (root.editSection === id) { root.editSection = "apps"; root.editPage = false }
   }
 
   // The bar handed to widgets living in a section: same as the bottom row's,
@@ -2225,15 +2380,22 @@ Item {
   // The "Add section" picker: searchable, grouped (hidden sections / Omarchy / plugins).
   property string addQuery: ""
   property int addIndex: 0
-  onAddOpenChanged: { addQuery = ""; addIndex = 0; if (addOpen) editTab = "section" }
+  onAddOpenChanged: { addQuery = ""; addIndex = 0; if (addOpen) { editTab = "section"; editPage = false } }
   onAddQueryChanged: addIndex = 0
   readonly property var addRows: {
     var q = root.addQuery.toLowerCase().trim()
     var terms = q ? q.split(/\s+/) : []
     function match(text) { text = String(text).toLowerCase(); return terms.every(function(t) { return text.indexOf(t) >= 0 }) }
     // built-in sections that are off (widget sections that are off go with their kind below)
-    var hidden = root.editSections.filter(function(e) { return e.id.indexOf("w:") !== 0 && root.setting(e.id, "show") === false })
-      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Widget" } })
+    var hidden = root.editSections.filter(function(e) { return e.id.indexOf("w:") !== 0 && root.sectionTileIds.indexOf(e.id) !== -1 && root.tileIds.indexOf(e.id) === -1 })
+      .map(function(e) { return { kind: "hidden", id: e.id, name: e.label.charAt(0) + e.label.slice(1).toLowerCase(), desc: root.defaultSectionDesc[e.id] || "Not in the sidebar — add it", cat: "Tile" } })
+    var sysRows = root.systemTileKeys.filter(function(k) { return root.tileIds.indexOf("sys:" + k[0]) === -1 && (["gpu", "vram", "temp"].indexOf(k[0]) === -1 || root.gpuFound) })
+      .map(function(k) { return { kind: "tile", id: "sys:" + k[0], name: k[1], desc: "Live system tile", cat: "System" } })
+    var liveRows = root.allPluginEntries.filter(function(e) { return root.tileIds.indexOf("wt:" + e.id) === -1 })
+      .map(function(e) { return { kind: "tile", id: "wt:" + e.id, name: root.widgetName(e.id), desc: "The plugin's widget as a live tile", cat: "Live tile" } })
+    var appRows = !terms.length ? [] : root.launchableApps().filter(function(e) { return root.pinnedTileKeys.indexOf(String(e.id)) === -1 })
+      .map(function(e) { return { kind: "app", id: String(e.id), name: String(e.name), desc: String(e.genericName || e.comment || ""), cat: "App" } })
+      .sort(function(a, b) { return a.name.localeCompare(b.name) })
     var w = root.barWidgetRegistry ? root.barWidgetRegistry.widgets : {}
     var omarchy = [], plugins = []
     root.embeddableWidgets.forEach(function(id) {
@@ -2244,7 +2406,7 @@ Item {
     })
     // widget sections already added but hidden: show them again, filed by kind
     root.extraSections.forEach(function(e) {
-      if (root.setting(e.id, "show") !== false) return
+      if (root.tileIds.indexOf(e.id) !== -1) return
       var wid = root.widgetOf(e.id)
       var meta = w[wid] && w[wid].metadata ? w[wid].metadata : {}
       var row = { kind: "hidden", id: e.id, name: root.widgetName(wid), desc: "Hidden — show it again", cat: String(meta.category || "") }
@@ -2259,15 +2421,20 @@ Item {
       out.push({ kind: "header", name: title + " · " + rows.length })
       rows.forEach(function(r) { out.push(r) })
     }
-    group("WIDGETS", hidden)
-    group("OMARCHY", omarchy)
-    group("PLUGINS", plugins)
+    group("TILES", hidden)
+    group("SYSTEM", sysRows)
+    group("LIVE TILES", liveRows)
+    group("APPS", appRows)
+    group("OMARCHY PANELS", omarchy)
+    group("PLUGIN PANELS", plugins)
     return out
   }
   readonly property var addPickable: root.addRows.filter(function(r) { return r.kind !== "header" })
   function addPick(row) {
     if (!row) return
-    if (row.kind === "hidden") { root.setSetting(row.id, "show", true); root.editSection = row.id; root.addOpen = false }
+    if (row.kind === "hidden" && String(row.id).indexOf("w:") === 0) { root.addTile(row.id); root.addOpen = false }
+    else if (row.kind === "hidden" || row.kind === "tile") { root.addTile(row.id); root.addOpen = false }
+    else if (row.kind === "app") { root.setPins(root.pinnedIds.concat([row.id])); root.editSel = "app:" + row.id; root.addOpen = false }
     else if (row.kind === "widget") root.addWidgetSection(row.id)
   }
 
@@ -2481,6 +2648,7 @@ Item {
       }
       WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
       WlrLayershell.keyboardFocus: (root.searching && root.searchMonitor === win.monitorName) || (win.qsHere && root.pwSsid !== "")
+                                   || (win.editHere && (root.addOpen || root.profileNaming))
         ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
       anchors { top: true; bottom: true; left: true }
       implicitWidth: root.sidebarWidth
@@ -3583,7 +3751,7 @@ Item {
       // column; the section itself is drawn above, with the sidebar's background,
       // and sticks where it is: at the top or bottom edge (stacked with any other
       // pinned ones) once scrolling would take it out of view. Not while editing.
-      readonly property bool pinsOn: !root.editing
+      readonly property bool pinsOn: false   // tiles don't stick (the grid scrolls as one)
       readonly property var pinnedIds: root.sectionOrder.filter(function(id) { return id !== "apps" && root.setting(id, "pinned") === true })
       onPinnedIdsChanged: Qt.callLater(win.applySectionOrder)
       onPinsOnChanged: Qt.callLater(win.applySectionOrder)
@@ -3640,9 +3808,7 @@ Item {
       // shifted up by the top trim and cut short by the bottom one. Untrimmed
       // sections stay as they are. (Widget sections trim themselves.)
       function isTrimmable(id) { return id !== "apps" && id !== "running" && String(id).indexOf("w:") !== 0 }
-      readonly property var trimmedIds: root.sectionOrder.filter(function(id) {
-        return win.isTrimmable(id) && (root.cropOf(id, "top") > 0 || root.cropOf(id, "bottom") > 0)
-      })
+      readonly property var trimmedIds: []   // a tile's size is its trim now
       onTrimmedIdsChanged: Qt.callLater(win.applySectionOrder)
       property var trimBoxes: ({})
       property int trimRev: 0
@@ -3699,61 +3865,19 @@ Item {
       // where the separator above the bottom row is in the window (the overlays
       // that open above the bottom row sit on it); it may be scrolled or pinned
       readonly property real bottomEdgeY: {
-        var dep = sideFlick.contentY + sideFlick.height + mainCol.height + bottomSep.y + win.pinRev + (secBottom.visible ? 1 : 0)
-        if (!secBottom.visible || !bottomSep.parent) return sideFlick.y + sideFlick.height
-        return Math.min(sideFlick.y + sideFlick.height, bottomSep.mapToItem(win.contentItem, 0, 0).y - mainCol.spacing)
+        var r = win.tileRects.tiles["bottom"]
+        if (!r || !secBottom.visible) return sideFlick.y + sideFlick.height
+        return Math.min(sideFlick.y + sideFlick.height, sideFlick.y + r.y - sideFlick.contentY - win.tileGap)
       }
 
       // Put the column's pieces in the saved section order (each section moves
       // with its parts; the panels that open above the bottom row go with it).
-      function applySectionOrder() {
-        var blocks = win.sectionBlocks()
-        // trimmed built-in sections: their parts go in a trim box, and the box takes their place
-        var trimmed = {}
-        win.trimmedIds.forEach(function(id) { if (blocks[id]) { trimmed[id] = { parts: blocks[id], box: win.trimBox(id) }; blocks[id] = [trimmed[id].box] } })
-        var items = []
-        var pinned = {}   // id -> its parts, drawn in its holder above the column
-        root.sectionOrder.forEach(function(id) {
-          // the spare height always sits just above the bottom row's place (pinned or not)
-          if (id === "bottom") items.push(bottomSpacer)
-          if (win.pinsOn && win.pinnedIds.indexOf(id) !== -1 && blocks[id]) {
-            var pp = win.pinParts(id)
-            items.push(pp.slot)
-            pinned[id] = { parts: blocks[id], holder: pp.holder }
-          } else (blocks[id] || []).forEach(function(it) { items.push(it) })
-        })
-        var current = []
-        for (var i = 0; i < mainCol.children.length; i++) current.push(mainCol.children[i])
-        var holdersOk = Object.keys(pinned).every(function(id) {
-          var c = pinned[id].holder.col.children
-          return pinned[id].parts.length === c.length && pinned[id].parts.every(function(it, k) { return c[k] === it })
-        })
-        var boxesOk = Object.keys(trimmed).every(function(id) {
-          var c = trimmed[id].box.col.children
-          return trimmed[id].parts.length === c.length && trimmed[id].parts.every(function(it, k) { return c[k] === it })
-        })
-        var same = boxesOk && holdersOk && items.length === current.length && items.every(function(it, k) { return current[k] === it })
-        if (same) return
-        // placeholders and trim boxes no longer used go back out of the column
-        for (var sid in win.pinSlots) if (items.indexOf(win.pinSlots[sid]) === -1) win.pinSlots[sid].parent = slotParking
-        for (var bid in win.trimBoxes) if (!trimmed[bid]) win.trimBoxes[bid].parent = slotParking
-        // a trimmed section's parts into its box first (the box may then be placed or pinned)
-        for (var tid in trimmed) {
-          trimmed[tid].parts.forEach(function(it) { it.parent = null })
-          trimmed[tid].parts.forEach(function(it) { it.parent = trimmed[tid].box.col })
-        }
-        items.forEach(function(it) { it.parent = null })
-        items.forEach(function(it) { it.parent = mainCol })
-        for (var pid in pinned) {
-          pinned[pid].parts.forEach(function(it) { it.parent = null })
-          pinned[pid].parts.forEach(function(it) { it.parent = pinned[pid].holder.col })
-        }
-        win.pinRev++
-      }
+      function applySectionOrder() { win.applyTileParents() }
       Component.onCompleted: Qt.callLater(win.applySectionOrder)
       Connections {
         target: root
         function onSectionOrderChanged() { Qt.callLater(win.applySectionOrder) }
+        function onTileIdsChanged() { Qt.callLater(win.applySectionOrder) }
       }
 
       // -- edit mode: a labelled outline on each section; clicking one picks it --
@@ -3762,7 +3886,7 @@ Item {
         id: editOverlay
         anchors.fill: parent
         z: 60
-        visible: win.editHere
+        visible: false   // the old outline editor; edit mode is the tiles' own now (tileGrid)
         // dragging a section to a new place
         property string dragId: ""
         property real dragY: 0
@@ -4186,24 +4310,26 @@ Item {
       NumberAnimation {
         id: edSlideAnim
         target: edSlide
-        property: "y"
-        duration: 240
-        easing.type: Easing.InOutCubic
-        onFinished: { if (root.edClosing) { root.editing = false; root.edClosing = false } }
+        property: "x"
+        duration: 220
+        easing.type: Easing.OutCubic
+      }
+      // the settings page (and the add list) slide in from the right, like a pivot
+      Connections {
+        target: root
+        function onEditPageChanged() { if (root.editPage && win.editHere) { edSlideAnim.from = edSlide.width * 0.35; edSlideAnim.to = 0; edSlideAnim.restart() } }
+        function onAddOpenChanged() { if (root.addOpen && win.editHere) { edSlideAnim.from = edSlide.width * 0.35; edSlideAnim.to = 0; edSlideAnim.restart() } }
       }
 
-      PanelWindow {
+      // Edit mode's settings page and add list: they take over the column (above the app bar)
+      Item {
         id: editorWin
-        screen: win.screen
-        visible: win.editHere
-        color: "transparent"
-        anchors { top: true; bottom: true; left: true }
-        margins.left: root.sidebarWidth
-        implicitWidth: 380
-        exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.layer: win.lifted ? WlrLayer.Overlay : WlrLayer.Top
-        WlrLayershell.namespace: "jake-metro-editor"
-        WlrLayershell.keyboardFocus: win.editHere && (root.addOpen || root.profileNaming) ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+        visible: win.editHere && (root.editPage || root.addOpen)
+        z: 75
+        x: win.panelInnerX
+        y: win.panelInnerX
+        width: win.panelInnerW
+        height: parent.height - y - win.panelInnerX - 84
 
         Item {
           anchors.fill: parent
@@ -4212,16 +4338,13 @@ Item {
             id: edSlide
             width: parent.width; height: parent.height
             color: Qt.rgba(root.background.r, root.background.g, root.background.b, 1)
-            Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.03) }
-          Rectangle { width: 1; height: parent.height; color: root.faint }
 
           // the page scrolls; the round app bar stays at the bottom
           Flickable {
             id: edFlick
             anchors.fill: parent
-            anchors.margins: 20
-            anchors.leftMargin: 22
-            anchors.bottomMargin: 92
+            anchors.margins: 16
+            anchors.bottomMargin: 8
             contentWidth: width
             contentHeight: edCol.implicitHeight
             clip: true
@@ -4245,7 +4368,7 @@ Item {
               Repeater {
                 // like a Windows Phone pivot: the current tab comes first, the rest follow it round
                 model: {
-                  var t = [["section", root.editSection === "apps" ? "tiles" : "this widget"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
+                  var t = [["section", root.editSection === "apps" ? "tiles" : "this tile"], ["sidebar", "sidebar"], ["profiles", "profiles"]]
                   var i = Math.max(0, t.map(function(x) { return x[0] }).indexOf(root.editTab))
                   return t.slice(i).concat(t.slice(0, i))
                 }
@@ -4352,7 +4475,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !parent.text
                     textFormat: Text.PlainText
-                    text: "search widgets and plugins"
+                    text: "search tiles, apps and plugins"
                     color: "#555555"; font.family: root.metroFont; font.pixelSize: 16
                   }
                 }
@@ -4527,9 +4650,9 @@ Item {
                   onPicked: function(v) { root.setSystemTile(modelData[0], v) }
                 }
               }
-              EdHeading { visible: root.editSection === "apps"; text: "app tiles" }
-              OptRow { visible: root.editSection === "apps"; label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
-              StepRow { visible: root.editSection === "apps" && root.tilesOn; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
+              EdHeading { visible: false; text: "app tiles" }
+              OptRow { visible: false; label: "Pinned apps as tiles"; options: parent.parent.onOff; current: root.setting("apps", "tiles"); onPicked: function(v) { root.setSetting("apps", "tiles", v) } }
+              StepRow { visible: false; Layout.leftMargin: 12; label: "› Medium tiles"; value: root.bigTiles; step: 1; min: 0; max: 6; suffix: ""; onChanged: function(v) { root.setSetting("apps", "bigTiles", v) } }
               EdHeading { visible: root.editSection === "apps" && root.allPluginEntries.length > 0; text: "plugin tiles" }
               Text { visible: root.editSection === "apps" && root.allPluginEntries.length > 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
                 text: "Pin a plugin as a live tile; it leaves the bottom row while it's a tile."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
@@ -4544,7 +4667,7 @@ Item {
                 }
               }
               OptRow { visible: root.editSection === "running"; label: "Show pinned apps that are open"; options: parent.parent.onOff; current: root.setting("running", "pinned") !== false; onPicked: function(v) { root.setSetting("running", "pinned", v) } }
-              StepRow { visible: root.editSection === "running"; label: root.runMaxH > 0 ? "Height" : "Height (fits all)"; value: root.runMaxH; step: 40; min: 0; max: 1200; suffix: " px"; onChanged: function(v) { root.setSetting("running", "maxH", v) } }
+              StepRow { visible: false; label: root.runMaxH > 0 ? "Height" : "Height (fits all)"; value: root.runMaxH; step: 40; min: 0; max: 1200; suffix: " px"; onChanged: function(v) { root.setSetting("running", "maxH", v) } }
               OptRow { visible: root.editSection === "running"; label: "Show apps that aren't pinned"; options: parent.parent.onOff; current: root.setting("apps", "running"); onPicked: function(v) { root.setSetting("apps", "running", v) } }
               OptRow { visible: root.editSection === "running"; label: "Group windows per app"; options: parent.parent.onOff; current: root.setting("apps", "group"); onPicked: function(v) { root.setSetting("apps", "group", v) } }
               OptRow { visible: root.editSection === "running"; label: "Row height"; options: [[true, "compact"], [false, "comfortable"]]; current: root.setting("apps", "compact"); onPicked: function(v) { root.setSetting("apps", "compact", v) } }
@@ -4654,7 +4777,7 @@ Item {
               }
               Text {
                 Layout.topMargin: 4
-                textFormat: Text.PlainText; text: "remove this widget"
+                textFormat: Text.PlainText; text: "remove this tile"
                 color: remMouse.containsMouse ? root.urgent : root.dim
                 font.family: root.metroFont; font.pixelSize: 14
                 MouseArea { id: remMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
@@ -4723,10 +4846,10 @@ Item {
             }
 
             // built-in sections: trim (widget sections have it in their own panel above)
-            StepRow { visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection); label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
-            StepRow { visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection); label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
+            StepRow { visible: false; label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
+            StepRow { visible: false; label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
             Text {
-              visible: root.editTab === "section" && !root.addOpen && win.isTrimmable(root.editSection) && (root.cropOf(root.editSection, "top") > 0 || root.cropOf(root.editSection, "bottom") > 0)
+              visible: false
               textFormat: Text.PlainText; text: "Reset trim"
               color: resetTrim2Mouse.containsMouse ? root.foreground : root.dim
               font.family: root.metroFont; font.pixelSize: 13
@@ -4734,14 +4857,14 @@ Item {
             }
             // every section but the app list can be pinned
             OptRow {
-              visible: root.editTab === "section" && !root.addOpen && root.editSection !== "apps"
+              visible: false
               label: "Pin in position"
               options: [[true, "on"], [false, "off"]]
               current: root.setting(root.editSection, "pinned") === true
               onPicked: function(v) { root.setSetting(root.editSection, "pinned", v) }
             }
             Text {
-              visible: root.editTab === "section" && !root.addOpen && root.editSection !== "apps" && root.setting(root.editSection, "pinned") === true
+              visible: false
               Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
               text: "Stays in view when the sidebar scrolls; the rest scrolls behind it. (Pins rest while editing.)"
               color: root.dim; font.family: root.metroFont; font.pixelSize: 13
@@ -4749,7 +4872,7 @@ Item {
             Text {
               visible: root.editTab === "section" && !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
-              textFormat: Text.PlainText; text: "remove this widget"
+              textFormat: Text.PlainText; text: "remove this tile"
               color: bRemMouse.containsMouse ? root.urgent : root.dim
               font.family: root.metroFont; font.pixelSize: 14
               MouseArea { id: bRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(root.editSection) }
@@ -4879,16 +5002,17 @@ Item {
               }
               Item { Layout.fillWidth: true }
               Text {
-                visible: JSON.stringify(root.sectionOrder) !== JSON.stringify(root.defaultOrder)
-                textFormat: Text.PlainText; text: "reset order"; color: resetOrderMouse.containsMouse ? root.foreground : root.dim
+                visible: Array.isArray(root.userSettings.tiles)
+                textFormat: Text.PlainText; text: "reset layout"; color: resetOrderMouse.containsMouse ? root.foreground : root.dim
                 font.family: root.metroFont; font.pixelSize: 13
-                MouseArea { id: resetOrderMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting("", "order", root.defaultOrder) }
+                MouseArea { id: resetOrderMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting("", "tiles", undefined) }
               }
             }
           }
           }
-          // Metro app bar: add · undo · cancel · save
+          // the old app bar (edit mode has its own along the bottom of the column: editBar)
           Rectangle {
+            visible: false
             anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
             height: 78
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
@@ -4942,9 +5066,9 @@ Item {
         anchors.leftMargin: 16 + win.panelInnerX
         anchors.topMargin: 16 + win.panelInnerX
         anchors.rightMargin: 16 + win.panelBorderW
-        anchors.bottomMargin: 10 + win.panelInnerX
+        anchors.bottomMargin: 10 + win.panelInnerX + (win.editHere ? 84 : 0)
         contentWidth: width
-        contentHeight: mainCol.height
+        contentHeight: tileGrid.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -4966,9 +5090,475 @@ Item {
         Behavior on opacity { NumberAnimation { duration: 200 } }
       }
 
+      // ---- the tile grid: everything in the column is a tile ---------------------------
+      // root.tileList packs into 4 columns (half-row steps), in order. Sections are
+      // reparented into a box each (tileBox); pinned apps, system and live tiles are
+      // drawn by pinTiles at their place in the grid. Calendar, search results, tray
+      // menus and docked panels open as full-width strips under (or above) their tile.
+      readonly property real tileGap: 6
+      readonly property real tileUnit: Math.max(20, (sideFlick.width - tileGap * 3) / 4)
+      readonly property real rowStep: (tileUnit + tileGap) / 2
+      readonly property bool searchHere: root.searching && root.searchMonitor === win.monitorName
+      // edit mode: the order while a tile is dragged, the size while a corner is
+      property var dragOrder: null
+      property string dragId: ""
+      property real tileDragX: 0
+      property real tileDragY: 0
+      property string dragLastOver: ""
+      property var dragSize: null
+      readonly property var layoutTiles: {
+        var list = win.dragOrder || root.tileList, ds = win.dragSize
+        if (ds) list = list.map(function(t) { return t.id === ds.id ? { id: t.id, w: ds.w, h: ds.h } : t })
+        // searching: the results open under the search box; the tiles after it step aside
+        if (win.searchHere) {
+          var si = list.map(function(t) { return t.id }).indexOf("search")
+          if (si >= 0) list = list.slice(0, si + 1).concat(list.slice(si + 1).filter(function(t) { return t.id === "bottom" }))
+        }
+        return list
+      }
+      readonly property var expanders: {
+        var out = []
+        if (root.sectionShown("clock") && root.calendarOpen) out.push({ key: "cal", anchor: "clock", before: false, h: secCalendar.implicitHeight })
+        if (win.searchHere) out.push({ key: "menu", anchor: "search", before: false, h: -1 })
+        if (win.trayHere) out.push({ key: "tray", anchor: "tray", before: false, h: trayPanel.implicitHeight })
+        if (root.dockedPanel !== null && root.dockMonitor === win.monitorName) out.push({ key: "dock", anchor: "bottom", before: true, h: dockCol.implicitHeight })
+        return out
+      }
+      readonly property var tileRects: {
+        var u = win.tileUnit, g = win.tileGap, rs = win.rowStep, W = sideFlick.width, H = sideFlick.height
+        var used = {}, tiles = {}, exps = {}
+        function free(c, r, w, h) { for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) if (used[(r + j) * 8 + c + i]) return false; return true }
+        win.layoutTiles.forEach(function(t) {
+          var w = Math.max(1, Math.min(4, t.w)), h = Math.max(1, t.h)
+          for (var r = 0; r < 4000; r++) for (var c = 0; c <= 4 - w; c++) if (free(c, r, w, h)) {
+            for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) used[(r + j) * 8 + c + i] = true
+            tiles[t.id] = { x: c * (u + g), y: r * rs, w: w * u + (w - 1) * g, h: h * rs - g }
+            return
+          }
+        })
+        var ids = Object.keys(tiles)
+        function shiftFrom(cut, dy) {
+          ids.forEach(function(id) { if (tiles[id].y >= cut) tiles[id].y += dy })
+          for (var k in exps) if (exps[k].y >= cut) exps[k].y += dy
+        }
+        function bottomAll() {
+          var m = 0
+          ids.forEach(function(id) { m = Math.max(m, tiles[id].y + tiles[id].h + g) })
+          for (var k in exps) m = Math.max(m, exps[k].y + exps[k].h + g)
+          return m
+        }
+        win.expanders.forEach(function(e) {
+          var a = tiles[e.anchor], cut, moved = true
+          if (!a) cut = bottomAll()
+          else if (e.before) {
+            cut = a.y
+            while (moved) { moved = false; ids.forEach(function(id) { var r = tiles[id]; if (r.y < cut && r.y + r.h + g > cut) { cut = r.y; moved = true } }) }
+          } else {
+            cut = a.y + a.h + g
+            while (moved) { moved = false; ids.forEach(function(id) { var r = tiles[id]; if (r.y < cut && r.y + r.h + g > cut) { cut = r.y + r.h + g; moved = true } }) }
+          }
+          // a strip that fills (search results) stops short of the bottom row
+          var bt = tiles["bottom"], reserve = bt && bt.y >= cut ? bt.h + g : 0
+          var eh = e.h >= 0 ? Math.max(0, e.h) : Math.max(160, H - cut - g - reserve)
+          shiftFrom(cut, eh + g)
+          exps[e.key] = { x: 0, y: cut, w: W, h: eh }
+        })
+        // the bottom row, when it's last and alone in its row, sits at the foot of the column
+        var b = tiles["bottom"], lt = win.layoutTiles
+        if (b && lt.length && lt[lt.length - 1].id === "bottom" && !win.dragId) {
+          var alone = ids.every(function(id) { var r = tiles[id]; return id === "bottom" || r.y + r.h <= b.y || r.y >= b.y + b.h })
+          var target = H - b.h
+          if (alone && target > b.y) {
+            var dy = target - b.y
+            if (exps.dock && exps.dock.y < b.y) exps.dock.y += dy
+            b.y = target
+          }
+        }
+        return { tiles: tiles, exps: exps, height: Math.max(0, bottomAll() - g) }
+      }
+      function rectOf(id) {
+        var r = win.tileRects.tiles[id]
+        if (!r) return null
+        if (id === win.dragId) return { x: win.tileDragX, y: win.tileDragY, w: r.w, h: r.h }
+        return r
+      }
+      function tileScale(id) { return !win.editHere ? 1 : root.editSel === id ? 1.03 : (root.editSel !== "" ? 0.9 : 0.94) }
+      function startTileDrag(id) {
+        var r = win.tileRects.tiles[id]
+        win.tileDragX = r ? r.x : 0; win.tileDragY = r ? r.y : 0
+        win.dragOrder = root.tileList.slice()
+        win.dragLastOver = ""
+        win.dragId = id
+      }
+      // over another tile: take its place (moving on, after it; moving back, before it)
+      function tileDragOver(px, py) {
+        var order = win.dragOrder, rects = win.tileRects.tiles, over = ""
+        if (!order) return
+        for (var i = 0; i < order.length; i++) {
+          var t = order[i]
+          if (t.id === win.dragId) continue
+          var r = rects[t.id]
+          if (r && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) { over = t.id; break }
+        }
+        if (over === win.dragLastOver) return
+        win.dragLastOver = over
+        if (!over) return
+        var ids = order.map(function(t) { return t.id })
+        var from = ids.indexOf(win.dragId), to = ids.indexOf(over)
+        var rest = order.slice(), me = rest.splice(from, 1)[0]
+        var at = rest.map(function(t) { return t.id }).indexOf(over)
+        rest.splice(from < to ? at + 1 : at, 0, me)
+        win.dragOrder = rest
+      }
+      function endTileDrag() {
+        var order = win.dragOrder
+        win.dragId = ""
+        win.dragOrder = null
+        win.dragLastOver = ""
+        if (order && JSON.stringify(order) !== JSON.stringify(root.tileList)) root.setTiles(order)
+      }
+      // a click on the corner (no drag): small → medium → wide (sections: full → half → quarter width)
+      function cycleTileSize(id) {
+        var t = root.tileOf(id)
+        if (!t) return
+        var presets = root.tileKind(id) === "section" ? [[4, t.h], [2, t.h], [1, t.h]] : [[1, 2], [2, 4], [4, 4]]
+        var i = presets.map(function(p) { return p[0] + "x" + p[1] }).indexOf(t.w + "x" + t.h)
+        var n = presets[(i + 1) % presets.length]
+        root.resizeTile(id, n[0], n[1])
+      }
+
+      property var tileBoxes: ({})
+      property var expBoxes: ({})
+      Component {
+        id: tileBoxComp
+        Item {
+          id: tbx
+          property string tid: ""
+          readonly property var r: win.rectOf(tid)
+          readonly property alias col: tbxCol
+          readonly property alias filler: tbxFill
+          readonly property bool grounded: root.groundedTiles.indexOf(tid) !== -1 || String(tid).indexOf("w:") === 0
+          visible: !!r
+          x: r ? r.x : 0
+          y: r ? r.y : 0
+          width: r ? r.w : 0
+          height: r ? r.h : 0
+          z: win.dragId === tid ? 5 : 0
+          scale: win.tileScale(tid)
+          clip: true
+          Behavior on x { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+          Behavior on y { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+          Behavior on width { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+          Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+          Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+          Rectangle { anchors.fill: parent; visible: tbx.grounded; color: root.tileGround }
+          // hold (or right-click) a tile's empty space to edit
+          MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            pressAndHoldInterval: 500
+            onPressAndHold: root.startEditing(win.monitorName, tbx.tid)
+            onClicked: function(m) { if (m.button === Qt.RightButton) root.startEditing(win.monitorName, tbx.tid) }
+          }
+          ColumnLayout {
+            id: tbxCol
+            anchors.fill: parent
+            anchors.margins: tbx.grounded ? 8 : 0
+            spacing: 6
+            // keeps the content at the top; the running list fills the tile itself
+            Item { id: tbxFill; Layout.fillWidth: true; Layout.fillHeight: tbx.tid !== "running"; Layout.preferredHeight: 0 }
+          }
+        }
+      }
+      function tileBox(id) {
+        if (!win.tileBoxes[id]) {
+          var b = tileBoxComp.createObject(tileGrid, { tid: id })
+          var m = Object.assign({}, win.tileBoxes); m[id] = b; win.tileBoxes = m
+        }
+        return win.tileBoxes[id]
+      }
+      Component {
+        id: expBoxComp
+        Item {
+          id: ebx
+          property string key: ""
+          readonly property var r: win.tileRects.exps[key] || null
+          readonly property alias col: ebxCol
+          x: 0
+          y: r ? r.y : 0
+          width: tileGrid.width
+          height: r ? r.h : 0
+          clip: true
+          ColumnLayout { id: ebxCol; width: parent.width; height: ebx.key === "menu" ? parent.height : implicitHeight; spacing: 4 }
+        }
+      }
+      function expBox(key) {
+        if (!win.expBoxes[key]) {
+          var b = expBoxComp.createObject(tileGrid, { key: key })
+          var m = Object.assign({}, win.expBoxes); m[key] = b; win.expBoxes = m
+        }
+        return win.expBoxes[key]
+      }
+      function sectionParts() {
+        var b = { clock: [secClock], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia],
+                  notifications: [secNotif], running: [runHeader, appList], tray: [secTray], bottom: [secBottom] }
+        for (var key in win.extraItems) b[key] = [win.extraItems[key]]
+        return b
+      }
+      function placeParts(parts, col, filler) {
+        var c = col.children, want = parts.concat(filler ? [filler] : [])
+        if (c.length === want.length && want.every(function(it, k) { return c[k] === it })) return
+        want.forEach(function(it) { it.parent = null })
+        want.forEach(function(it) { it.parent = col })
+      }
+      function applyTileParents() {
+        var parts = win.sectionParts()
+        for (var id in parts) {
+          if (root.tileIds.indexOf(id) !== -1) { var b = win.tileBox(id); win.placeParts(parts[id], b.col, b.filler) }
+          else parts[id].forEach(function(it) { if (it.parent !== slotParking) it.parent = slotParking })
+        }
+        ;[["cal", secCalendar], ["menu", menuList], ["tray", trayPanel], ["dock", dockCol]].forEach(function(e) { win.placeParts([e[1]], win.expBox(e[0]).col, null) })
+        ;[bottomSpacer, bottomSep].forEach(function(it) { if (it.parent !== slotParking) it.parent = slotParking })
+        if (pinTiles.parent !== tileGrid) {
+          pinTiles.parent = tileGrid
+          // the column it was declared in had placed it (overriding its bindings): put it back at the grid's origin
+          pinTiles.x = 0; pinTiles.y = 0
+          pinTiles.width = Qt.binding(function() { return tileGrid.width })
+          pinTiles.height = Qt.binding(function() { return win.tileRects.height })
+        }
+      }
+      onExtraItemsChanged: Qt.callLater(win.applyTileParents)
+
+      Item {
+        id: tileGrid
+        parent: sideFlick.contentItem
+        width: sideFlick.width
+        height: Math.max(sideFlick.height, win.tileRects.height)
+        // edit mode: a click on empty space drops the pick
+        MouseArea { anchors.fill: parent; enabled: win.editHere; onClicked: root.editSel = "" }
+        // where the dragged tile will land
+        Rectangle {
+          readonly property var r: win.dragId ? win.tileRects.tiles[win.dragId] || null : null
+          visible: !!r
+          z: 40
+          x: r ? r.x : 0; y: r ? r.y : 0; width: r ? r.w : 0; height: r ? r.h : 0
+          color: "transparent"
+          border.width: 2
+          border.color: root.dim
+        }
+        // edit mode, one handle per tile: drag to move, the corner to resize, ✕ off, ⚙ settings
+        Repeater {
+          model: win.editHere ? root.tileIds : []
+          delegate: Item {
+            id: et
+            required property var modelData
+            readonly property string tid: String(modelData)
+            readonly property var r: win.rectOf(tid)
+            readonly property bool sel: root.editSel === tid
+            readonly property bool held: win.dragId === tid
+            readonly property bool sizing: !!win.dragSize && win.dragSize.id === tid
+            readonly property real bs: r ? Math.max(18, Math.min(28, (r.h - 8) / 2)) : 28
+            visible: !!r
+            z: held ? 100 : sel ? 60 : 50
+            x: r ? r.x : 0
+            y: r ? r.y : 0
+            width: r ? r.w : 0
+            height: r ? r.h : 0
+            scale: win.tileScale(tid)
+            Behavior on x { enabled: !et.held; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+            Behavior on y { enabled: !et.held; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+            Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+            Behavior on height { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+            Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+            // the others sink back while one is picked
+            Rectangle {
+              anchors.fill: parent
+              color: root.background
+              opacity: root.editSel !== "" && !et.sel ? 0.5 : 0
+              Behavior on opacity { NumberAnimation { duration: 140 } }
+            }
+            // every tile outlined (some sit straight on the sidebar); the picked one in white
+            Rectangle {
+              anchors.fill: parent
+              color: "transparent"
+              border.width: et.sel ? 2 : 1
+              border.color: et.sel ? "#FFFFFF" : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
+            }
+            // what it is, for tiles that don't say
+            Rectangle {
+              visible: root.tileKind(et.tid) === "section" && et.height >= 30
+              x: et.sel ? et.bs + 8 : 4
+              y: 4
+              width: tagText.implicitWidth + 10
+              height: tagText.implicitHeight + 2
+              color: root.background
+              Text { id: tagText; anchors.centerIn: parent; textFormat: Text.PlainText; text: root.tileLabel(et.tid); color: root.foreground; font.family: root.metroFont; font.pixelSize: 11 }
+            }
+            Text {
+              visible: et.sizing
+              anchors.centerIn: parent
+              textFormat: Text.PlainText
+              text: et.sizing ? win.dragSize.w + " × " + (win.dragSize.h / 2) : ""
+              color: root.foreground
+              style: Text.Outline; styleColor: root.background
+              font.family: root.metroFont; font.pixelSize: 18
+            }
+            MouseArea {
+              id: etMouse
+              anchors.fill: parent
+              preventStealing: true
+              acceptedButtons: Qt.LeftButton | Qt.RightButton
+              cursorShape: et.held ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+              property bool dragging: false
+              property real gx: 0
+              property real gy: 0
+              property real ox: 0
+              property real oy: 0
+              onPressed: function(m) {
+                var p = mapToItem(tileGrid, m.x, m.y)
+                gx = p.x; gy = p.y
+                ox = p.x - (et.r ? et.r.x : 0); oy = p.y - (et.r ? et.r.y : 0)
+                root.editSel = et.tid
+              }
+              onPositionChanged: function(m) {
+                if (!(pressedButtons & Qt.LeftButton)) return
+                var p = mapToItem(tileGrid, m.x, m.y)
+                if (!dragging && Math.abs(p.x - gx) + Math.abs(p.y - gy) > 8) { dragging = true; win.startTileDrag(et.tid) }
+                if (!dragging) return
+                win.tileDragX = p.x - ox
+                win.tileDragY = p.y - oy
+                win.tileDragOver(p.x, p.y)
+                var vy = p.y - sideFlick.contentY, maxY = Math.max(0, sideFlick.contentHeight - sideFlick.height)
+                if (vy < 40) sideFlick.contentY = Math.max(0, sideFlick.contentY - 12)
+                else if (vy > sideFlick.height - 40) sideFlick.contentY = Math.min(maxY, sideFlick.contentY + 12)
+              }
+              onReleased: if (dragging) { dragging = false; win.endTileDrag() }
+              onCanceled: if (dragging) { dragging = false; win.endTileDrag() }
+              onDoubleClicked: root.openTileSettings(et.tid)
+              onClicked: function(m) { if (m.button === Qt.RightButton) root.openTileSettings(et.tid) }
+            }
+            // ✕: take it off (an app tile is unpinned); the bottom row stays
+            Rectangle {
+              visible: et.sel && !et.held && et.tid !== "bottom"
+              width: et.bs; height: et.bs; radius: et.bs / 2
+              x: et.width - width - 3; y: 3
+              color: xMouse.pressed ? root.accent : "#FFFFFF"
+              border.width: 2; border.color: "#000000"
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "✕"; color: "#000000"; font.family: root.metroFont; font.pixelSize: Math.round(et.bs * 0.45) }
+              MouseArea { id: xMouse; anchors.fill: parent; anchors.margins: -3; cursorShape: Qt.PointingHandCursor; onClicked: root.removeTile(et.tid) }
+            }
+            // ⚙: its settings
+            Rectangle {
+              visible: et.sel && !et.held
+              width: et.bs; height: et.bs; radius: et.bs / 2
+              x: 3; y: 3
+              color: gMouse.pressed ? root.accent : "#FFFFFF"
+              border.width: 2; border.color: "#000000"
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "⚙"; color: "#000000"; font.pixelSize: Math.round(et.bs * 0.58) }
+              MouseArea { id: gMouse; anchors.fill: parent; anchors.margins: -3; cursorShape: Qt.PointingHandCursor; onClicked: root.openTileSettings(et.tid) }
+            }
+            // the corner: drag to resize (snaps to the grid); click for the next size
+            Rectangle {
+              visible: et.sel && !et.held
+              width: et.bs; height: et.bs; radius: et.bs / 2
+              x: et.width - width - 3; y: et.height - height - 3
+              color: rzMouse.pressed ? root.accent : "#FFFFFF"
+              border.width: 2; border.color: "#000000"
+              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "↘"; color: "#000000"; font.family: root.metroFont; font.pixelSize: Math.round(et.bs * 0.55) }
+              MouseArea {
+                id: rzMouse
+                anchors.fill: parent
+                anchors.margins: -4
+                preventStealing: true
+                cursorShape: Qt.SizeFDiagCursor
+                property bool moved: false
+                property real sx: 0
+                property real sy: 0
+                property real rx: 0
+                property real ry: 0
+                onPressed: function(m) {
+                  var p = mapToItem(tileGrid, m.x, m.y)
+                  sx = p.x; sy = p.y; rx = et.r ? et.r.x : 0; ry = et.r ? et.r.y : 0; moved = false
+                }
+                onPositionChanged: function(m) {
+                  var p = mapToItem(tileGrid, m.x, m.y)
+                  if (!moved && Math.abs(p.x - sx) + Math.abs(p.y - sy) < 5) return
+                  moved = true
+                  var w = Math.max(1, Math.min(4, Math.round((p.x - rx + win.tileGap) / (win.tileUnit + win.tileGap))))
+                  var h = Math.max(1, Math.min(30, Math.round((p.y - ry + win.tileGap) / win.rowStep)))
+                  if (!win.dragSize || win.dragSize.w !== w || win.dragSize.h !== h) win.dragSize = { id: et.tid, w: w, h: h }
+                }
+                onReleased: {
+                  var ds = win.dragSize
+                  win.dragSize = null
+                  if (moved && ds) root.resizeTile(et.tid, ds.w, ds.h)
+                  else if (!moved) win.cycleTileSize(et.tid)
+                }
+                onCanceled: win.dragSize = null
+              }
+            }
+          }
+        }
+      }
+
+      // edit mode's app bar, in place of the bottom of the column: add · settings · undo · cancel · done
+      Rectangle {
+        id: editBar
+        visible: win.editHere
+        z: 80
+        x: win.panelInnerX
+        width: win.panelInnerW
+        y: parent.height - height - win.panelInnerX
+        height: 84
+        color: root.background
+        Rectangle { anchors.fill: parent; color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08) }
+        Row {
+          anchors.centerIn: parent
+          spacing: Math.max(8, Math.min(22, (editBar.width - 5 * 40) / 6))
+          Repeater {
+            model: {
+              var paged = root.editPage || root.addOpen
+              return [["+", "add", "add"], [paged ? "‹" : "⚙", paged ? "back" : "settings", "page"], ["↺", "undo", "undo"], ["✕", "cancel", "cancel"], ["✓", "done", "save"]]
+            }
+            Column {
+              id: ebBtn
+              required property var modelData
+              readonly property bool off: modelData[2] === "undo" && root.editHistory.length === 0
+              readonly property bool on: modelData[2] === "add" && root.addOpen
+              spacing: 4
+              opacity: off ? 0.35 : 1
+              Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 40; height: 40; radius: 20
+                color: ebBtn.on || ebMouse.pressed ? root.foreground : "transparent"
+                border.width: 2
+                border.color: root.foreground
+                Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: ebBtn.modelData[0]; color: ebBtn.on || ebMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 19 }
+                MouseArea {
+                  id: ebMouse
+                  anchors.fill: parent
+                  enabled: !ebBtn.off
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    var k = ebBtn.modelData[2]
+                    if (k === "add") root.addOpen = !root.addOpen
+                    else if (k === "page") { if (root.editPage || root.addOpen) { root.editPage = false; root.addOpen = false } else root.openTileSettings(root.editSel) }
+                    else if (k === "undo") root.undoEdit()
+                    else if (k === "cancel") root.cancelEditing()
+                    else root.saveEditing()
+                  }
+                }
+              }
+              Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: ebBtn.modelData[1]; color: root.foreground; font.family: root.metroFont; font.pixelSize: 12 }
+            }
+          }
+        }
+      }
+
       ColumnLayout {
         id: mainCol
         parent: sideFlick.contentItem
+        visible: false   // where the sections are declared; each goes into its tile (applyTileParents)
         width: sideFlick.width
         height: Math.max(sideFlick.height, implicitHeight)
         spacing: 14
@@ -4985,7 +5575,8 @@ Item {
                                                                         : (root.setting("clock", "seconds") ? "h:mm:ss AP" : "h:mm AP"))
             color: root.foreground
             font.family: root.metroFont
-            font.pixelSize: Math.round(Math.min(68, Math.max(44, root.sidebarWidth * 0.19)))
+            // as big as its tile allows
+            font.pixelSize: { var r = win.tileRects.tiles["clock"]; return Math.round(r ? Math.max(16, Math.min(68, r.w * 0.21, r.h * 0.78)) : 60) }
             font.weight: Font.Light
             font.letterSpacing: -1
           }
@@ -5034,7 +5625,7 @@ Item {
           clip: true
           Layout.fillWidth: true
           Layout.preferredHeight: anyShown ? 24 : 0
-          Layout.topMargin: !anyShown ? -mainCol.spacing : (underClock ? -8 : 0)
+          Layout.topMargin: 0
           spacing: 2
           Repeater {
             id: statusRep
@@ -5628,31 +6219,21 @@ Item {
           readonly property var stiles: root.systemTiles
           readonly property int appOffset: stiles.length
           readonly property var wtiles: root.widgetTiles
-          visible: root.sectionShown("apps") && !(root.searching && root.searchMonitor === win.monitorName) && (items.length + stiles.length + wtiles.length) > 0
-          opacity: root.sectionOpacity("apps")
-          Layout.fillWidth: true
-          Layout.preferredHeight: rects.length > 0 ? rects.reduce(function(m, r) { return Math.max(m, r.y + r.h) }, 0) : 0
-          readonly property real gap: 6
-          readonly property real unit: (width - gap * 3) / 4
-          // pack: medium (2x2) tiles first, then small (1x1) ones, left to right in a 4-column grid
-          // each tile's size in grid cells: pinned apps (the first few medium), then widget tiles
-          readonly property var cellSizes: {
-            var out = []
-            stiles.forEach(function(t) { out.push(pinTiles.sizeCells(t.size)) })
-            for (var k = 0; k < items.length; k++) out.push(k < root.bigTiles ? [2, 2] : [1, 1])
-            wtiles.forEach(function(w) { out.push(pinTiles.sizeCells(w.size)) })
-            return out
-          }
+          // drawn over the whole grid; each tile sits at its place in it (win.tileRects)
+          x: 0
+          y: 0
+          z: 1
+          width: tileGrid.width
+          height: win.tileRects.height
+          readonly property real gap: win.tileGap
+          readonly property real unit: win.tileUnit
+          // in the old order (system, apps, live tiles): the drop code counts pins by index
           readonly property var rects: {
-            var n = cellSizes.length, out = [], used = {}, u = unit, g = gap
-            function free(c, r, w, h) { if (c + w > 4) return false; for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) if (used[(r + j) + ":" + (c + i)]) return false; return true }
-            function take(c, r, w, h) { for (var i = 0; i < w; i++) for (var j = 0; j < h; j++) used[(r + j) + ":" + (c + i)] = true }
-            for (var k = 0; k < n; k++) {
-              var cw = cellSizes[k][0], ch = cellSizes[k][1], placed = false
-              for (var r = 0; !placed && r < 64; r++) for (var c = 0; !placed && c < 4; c++) {
-                if (free(c, r, cw, ch)) { take(c, r, cw, ch); out.push({ x: c * (u + g), y: r * (u + g), w: cw * u + (cw - 1) * g, h: ch * u + (ch - 1) * g, big: cw > 1 || ch > 1 }); placed = true }
-              }
-            }
+            var out = [], none = { x: 0, y: 0, w: 0, h: 0, big: false }
+            function rr(id) { var r = win.rectOf(id); return r ? { x: r.x, y: r.y, w: r.w, h: r.h, big: r.w > pinTiles.unit + 1 || r.h > pinTiles.unit + 1 } : none }
+            stiles.forEach(function(t) { out.push(rr("sys:" + t.key)) })
+            items.forEach(function(t) { out.push(rr("app:" + t.key)) })
+            wtiles.forEach(function(w) { out.push(rr("wt:" + w.id)) })
             return out
           }
           Repeater {
@@ -5667,10 +6248,17 @@ Item {
               readonly property bool focused: windows.some(function(t) { return t.activated && !root.isMinimized(t) })
               readonly property bool dropHere: !!win.listDrop && !!win.listDrop.tile && win.listDrop.over === index
               readonly property int badge: root.setting("apps", "badges") !== false ? root.badgeOf(modelData) : 0
+              readonly property string tid: "app:" + modelData.key
+              visible: r.w > 0
               x: r.x; y: r.y; width: r.w; height: r.h
+              z: win.dragId === tid ? 5 : 0
+              Behavior on x { enabled: win.editHere && win.dragId !== tile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on y { enabled: win.editHere && win.dragId !== tile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on width { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
               color: root.accent
               // pressed tiles give a little, like Metro's tilt
-              scale: tMouse.pressed && !tMouse.dragging ? 0.96 : 1
+              scale: (tMouse.pressed && !tMouse.dragging ? 0.96 : 1) * win.tileScale(tid)
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               border.width: focused || dropHere ? 2 : 0
               border.color: dropHere ? root.foreground : "#FFFFFF"
@@ -5738,6 +6326,8 @@ Item {
                   win.endDrag(p.x, p.y)
                 }
                 onCanceled: if (dragging) { dragging = false; win.dragItem = null }
+                pressAndHoldInterval: 500
+                onPressAndHold: if (!dragging) root.startEditing(win.monitorName, tile.tid)
                 onClicked: function(mouse) {
                   if (dragged) { dragged = false; return }
                   if (mouse.button === Qt.RightButton) win.openAppMenu(tile.modelData, tile)
@@ -5757,9 +6347,17 @@ Item {
               readonly property var r: pinTiles.rects[index] || { x: 0, y: 0, w: 0, h: 0, big: false }
               readonly property var d: root.sysTileData(modelData.key)
               readonly property bool roomy: r.h > pinTiles.unit + 1
+              readonly property string tid: "sys:" + modelData.key
+              visible: r.w > 0
               x: r.x; y: r.y; width: r.w; height: r.h
+              z: win.dragId === tid ? 5 : 0
+              Behavior on x { enabled: win.editHere && win.dragId !== stile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on y { enabled: win.editHere && win.dragId !== stile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on width { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              clip: true
               color: d.hot ? root.accent : root.tileGround
-              scale: stMouse.pressed ? 0.96 : 1
+              scale: (stMouse.pressed ? 0.96 : 1) * win.tileScale(tid)
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               Text {
                 id: stVal
@@ -5816,8 +6414,10 @@ Item {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
+                pressAndHoldInterval: 500
+                onPressAndHold: root.startEditing(win.monitorName, stile.tid)
                 onClicked: function(mouse) {
-                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName); root.editSection = "apps"; return }
+                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName, stile.tid); return }
                   root.run("omarchy-launch-or-focus-tui btop")
                 }
               }
@@ -5832,18 +6432,27 @@ Item {
               required property var modelData
               required property int index
               readonly property var r: pinTiles.rects[pinTiles.appOffset + pinTiles.appCount + index] || { x: 0, y: 0, w: 0, h: 0, big: false }
+              readonly property string tid: "wt:" + modelData.id
+              visible: r.w > 0
               x: r.x; y: r.y; width: r.w; height: r.h
+              z: win.dragId === tid ? 5 : 0
+              Behavior on x { enabled: win.editHere && win.dragId !== wtile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on y { enabled: win.editHere && win.dragId !== wtile.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on width { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+              Behavior on height { enabled: win.editHere; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
               color: root.accent
               clip: true
-              scale: wtMouse.pressed ? 0.96 : 1
+              scale: (wtMouse.pressed ? 0.96 : 1) * win.tileScale(tid)
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               MouseArea {
                 id: wtMouse
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
+                pressAndHoldInterval: 500
+                onPressAndHold: root.startEditing(win.monitorName, wtile.tid)
                 onClicked: function(mouse) {
-                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName); root.editSection = "apps"; return }
+                  if (mouse.button === Qt.RightButton) { root.startEditing(win.monitorName, wtile.tid); return }
                   root.summonBarWidget(wtile.modelData.id)
                 }
               }
@@ -5925,11 +6534,10 @@ Item {
           visible: !(root.searching && root.searchMonitor === win.monitorName) && root.sectionShown("running")
           opacity: root.sectionOpacity("running")
           Layout.fillWidth: true
-          Layout.preferredHeight: root.runMaxH > 0 ? Math.min(contentHeight, root.runMaxH) : contentHeight
-          // all of it: when the sidebar runs out of room it scrolls as a whole;
-          // with a height set (edit mode, drag its bottom edge) the list scrolls by itself
-          Layout.minimumHeight: root.runMaxH > 0 ? Math.min(contentHeight, root.runMaxH) : contentHeight
-          Layout.maximumHeight: root.runMaxH > 0 ? root.runMaxH : Number.POSITIVE_INFINITY
+          // fills its tile; scrolls (wheel) when the apps don't fit
+          Layout.fillHeight: true
+          Layout.preferredHeight: 40
+          Layout.minimumHeight: 0
           clip: true
           spacing: 2
           interactive: false

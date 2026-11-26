@@ -9,17 +9,28 @@ notifications inside it, editing and profiles.
 
 Requires an Omarchy install with the Lua Hyprland config (Omarchy 4+).
 
-## Widgets and tiles
+## Everything is a tile
 
-The column is made of two kinds of things:
+The column is one Windows Phone-style tile grid, four columns wide. The clock, status,
+search, workspaces, running apps, tray, media, notifications and the plugins row are
+tiles, next to the **system tiles** (cpu, memory, disk, gpu, network), **app tiles** (your
+pinned apps) and **live tiles** (a plugin's widget). Tiles pack in order, left to right,
+in half-row steps. The calendar, search results, tray menus and docked panels open as
+full-width strips under their tile, and the plugins row stays at the foot of the column.
 
-- **Widgets**: the blocks down the column — clock, status, search, workspaces, running apps,
-  notifications, now playing, tray, the bottom row, and any plugin panel added as a widget.
-  Move, hide and set them up in Edit sidebar; add more with `+`.
-- **Tiles**: everything in the tile grid — **system tiles** (cpu, memory, disk, gpu, network),
-  **app tiles** (your pinned apps) and **plugin tiles** (a plugin's widget, live). Each can be
-  off, small, medium or wide (Edit sidebar › tiles). Click a system tile for btop, an app tile
-  to open the app, a plugin tile for its panel; right-click any tile to edit the tiles.
+**Editing** happens in the column itself, like the Start screen: hold any tile (or
+right-click one, or quick settings › edit sidebar). Everything shrinks back and the tile
+you picked lifts:
+
+- drag a tile to move it; the others make room
+- drag the **↘** corner to resize it (snaps to the grid); click the corner for the next size
+- **✕** takes it off (an app tile is unpinned; the plugins row stays)
+- **⚙** (or double-click) opens its settings, a pivot page over the column
+- the app bar along the bottom: **add** (tiles, system tiles, live tiles, apps, panels) ·
+  **settings** · **undo** · **cancel** · **done**
+
+The layout is saved as `tiles` in `metro-settings.json`; "reset layout" in the settings
+page goes back to the default.
 
 ## What's Metro about it
 
@@ -38,7 +49,7 @@ The column is made of two kinds of things:
 | Overview (Super) | A panorama: a giant "overview" title, one column per workspace with its caption, the next one peeking in at the edge; ← → move between workspaces |
 | Notifications | Square cards with an accent stripe, inside the top of the column |
 | Corners | Square everywhere, windows included (Edit sidebar › Corners to change) |
-| Edit sidebar | The column's sections become tiles (the rest shrink back, the one you're editing lifts in the accent with a round ✕); beside it a Metro settings page with a pivot (this section · sidebar · profiles), toggle switches, option tiles, round − / + steppers, an accent tile grid, and a round app bar (add · undo · cancel · save) |
+| Edit mode | In the column, like the Start screen: hold a tile and it lifts (the rest shrink back), drag to move, drag the corner to resize, ✕ / ⚙ badges, a round app bar (add · settings · undo · cancel · done); settings are a pivot page (this tile · sidebar · profiles) over the column |
 
 Type is [Selawik](https://github.com/microsoft/Selawik), Microsoft's open stand-in for Segoe,
 bundled in `fonts/` under the SIL Open Font License (`fonts/LICENSE-Selawik.txt`). Icon
@@ -83,7 +94,7 @@ installed (`--purge` also deletes this folder and the `metro-*.json` files).
 ## Shortcuts you can bind
 
 `omarchy-shell jake.metro <command>`: `search`, `overview`, `quickSettings`, `edit`,
-`editTab section|sidebar|profiles`, `editAdd`, `settings <section>`, `launchPinned <n>`.
+`editTab section|sidebar|profiles`, `editAdd`, `editWidget <tile>`, `editSettings <tile>`, `editDone`, `settings <section>`, `launchPinned <n>`.
 
 ## Notes for editing
 
