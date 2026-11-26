@@ -546,7 +546,7 @@ Item {
     command: ["sh", "-c", "df -P / | awk 'NR==2{print \"disk\", $5}'"]
     stdout: StdioCollector { onStreamFinished: root.parseStats(text) }
   }
-  Timer { interval: 60000; running: true; repeat: true; triggeredOnStart: true; onTriggered: diskProc.running = true }
+  Timer { interval: 60000; running: root.statsWanted; repeat: true; triggeredOnStart: true; onTriggered: diskProc.running = true }
 
   // ---- rice updates (quick settings › Update button) -----------------------
   readonly property string updateScript: Qt.resolvedUrl("update.sh").toString().replace("file://", "")
@@ -596,8 +596,10 @@ Item {
     root.statHistory = h
   }
   property var statHistory: ({})
+  // jake.metro: only while something shows them (a system tile or the system section)
+  readonly property bool statsWanted: root.systemTiles.length > 0 || root.sectionShown("system")
   Timer {
-    interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: true; repeat: true; triggeredOnStart: true
+    interval: Math.max(1, root.setting("system", "refresh")) * 1000; running: root.statsWanted; repeat: true; triggeredOnStart: true
     onTriggered: root.pollStats()
   }
 
@@ -907,19 +909,6 @@ Item {
     var here = mon && mon.activeWorkspace ? mon.activeWorkspace.id : 1
     return "bash " + Util.shellQuote(root.soloScript) + " --clear " + here
       + (keep || []).map(function(k) { return " " + Util.shellQuote(root.addrOf(k)) }).join("")
-  }
-  // A gear as an SVG path: `teeth` teeth between radius ri and ro around (cx, cy),
-  // with a round hole of radius rh (fill it with the odd-even rule).
-  function gearPath(cx, cy, ro, ri, rh, teeth) {
-    var step = 2 * Math.PI / teeth, pts = []
-    function pt(a, r) { return (cx + r * Math.cos(a)).toFixed(3) + " " + (cy + r * Math.sin(a)).toFixed(3) }
-    for (var k = 0; k < teeth; k++) {
-      var a = k * step + step / 2       // a gap, not a tooth, where the cut runs
-      pts.push(pt(a - step * 0.36, ri), pt(a - step * 0.22, ro), pt(a + step * 0.22, ro), pt(a + step * 0.36, ri))
-    }
-    var hole = "M " + (cx + rh) + " " + cy + " A " + rh + " " + rh + " 0 1 0 " + (cx - rh) + " " + cy
-             + " A " + rh + " " + rh + " 0 1 0 " + (cx + rh) + " " + cy + " Z"
-    return "M " + pts.join(" L ") + " Z " + hole
   }
   function addrOf(t) { var a = String(t.address || ""); return a.indexOf("0x") === 0 ? a : "0x" + a }
 
@@ -2053,15 +2042,6 @@ Item {
   function sizeCells(z) { return z === "wide" ? [4, 4] : z === "medium" ? [2, 4] : [1, 2] }
   function sizeName(w, h) { return w >= 4 ? "wide" : (w >= 2 || h >= 4) ? "medium" : "small" }
   function defaultTileSize(id) { var d = root.tileDefaults[id]; return d ? d : String(id).indexOf("w:") === 0 ? [4, 6] : [1, 2] }
-  function tileLabel(id) {
-    var k = root.tileKind(id)
-    if (k === "sys") { var s = root.systemTileKeys.filter(function(x) { return x[0] === id.slice(4) })[0]; return s ? s[1] : id }
-    if (k === "app") { var r = root.appItems("").filter(function(x) { return x.pinned && x.key === id.slice(4) })[0]; return r ? root.displayName(r).toLowerCase() : id.slice(4) }
-    if (k === "wt") return root.widgetName(id.slice(3)).toLowerCase()
-    if (String(id).indexOf("w:") === 0) return root.widgetName(root.widgetOf(id)).toLowerCase()
-    var e = root.editSections.filter(function(x) { return x.id === id })[0]
-    return e ? String(e.label).toLowerCase() : id
-  }
   // the old settings: tiles by size name, the first few pins medium
   readonly property var legacyWidgetTileMap: { var m = root.setting("apps", "widgetTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
   readonly property var legacySystemTileMap: { var m = root.setting("apps", "systemTiles"); return m && typeof m === "object" && !Array.isArray(m) ? m : {} }
@@ -2253,7 +2233,6 @@ Item {
     root.editing = true
   }
   property var editSnapshot: ({})
-  property bool edClosing: false
   function closeEditor(save) {
     if (save) { root.syncPinsToTiles(); root.writeSettings() }
     else {
@@ -3758,122 +3737,8 @@ Item {
         }
       }
 
-      // ---- pinned sections ----------------------------------------------------
-      // A pinned section keeps a placeholder of its height in the scrolling
-      // column; the section itself is drawn above, with the sidebar's background,
-      // and sticks where it is: at the top or bottom edge (stacked with any other
-      // pinned ones) once scrolling would take it out of view. Not while editing.
-      readonly property bool pinsOn: false   // tiles don't stick (the grid scrolls as one)
-      readonly property var pinnedIds: root.sectionOrder.filter(function(id) { return id !== "apps" && root.setting(id, "pinned") === true })
-      onPinnedIdsChanged: Qt.callLater(win.applySectionOrder)
-      onPinsOnChanged: Qt.callLater(win.applySectionOrder)
-      property var pinSlots: ({})
-      property var pinHolders: ({})
-      property int pinRev: 0
+      // where the sections not in a tile wait, out of sight
       Item { id: slotParking; visible: false }
-      Item {
-        id: pinLayer
-        x: sideFlick.x; y: sideFlick.y; width: sideFlick.width; height: sideFlick.height
-        z: 5
-      }
-      Component {
-        id: pinSlotComp
-        Item {
-          property var holder: null
-          Layout.fillWidth: true
-          Layout.preferredHeight: holder ? holder.height : 0
-          visible: !!holder && holder.height > 0
-        }
-      }
-      Component {
-        id: pinHolderComp
-        Item {
-          id: ph
-          property string sid: ""
-          property var slot: null
-          readonly property alias col: phCol
-          readonly property var shownPins: win.pinnedIds.filter(function(id) { var h = win.pinHolders[id]; return h && h.active && h.height > 0 })
-          readonly property bool active: win.pinsOn && win.pinnedIds.indexOf(sid) !== -1
-          // the room the pinned sections before and after this one take at the edges
-          readonly property real topOff: { var t = 0, me = shownPins.indexOf(sid); for (var i = 0; i < me; i++) t += win.pinHolders[shownPins[i]].height + mainCol.spacing; return t }
-          readonly property real bottomOff: { var b = 0, me = shownPins.indexOf(sid); if (me < 0) return 0; for (var i = me + 1; i < shownPins.length; i++) b += win.pinHolders[shownPins[i]].height + mainCol.spacing; return b }
-          readonly property real naturalY: slot ? slot.y - sideFlick.contentY : 0
-          visible: active && height > 0
-          width: pinLayer.width
-          height: phCol.implicitHeight
-          y: Math.max(topOff, Math.min(naturalY, pinLayer.height - bottomOff - height))
-          onYChanged: win.pinRev++
-          onHeightChanged: win.pinRev++
-          // the sidebar's background behind it, edge to edge, so what scrolls goes underneath
-          Rectangle {
-            x: win.panelInnerX - sideFlick.x
-            y: -mainCol.spacing / 2
-            width: win.panelInnerW
-            height: parent.height + mainCol.spacing
-            color: win.color.a < 1 ? root.background : win.color
-          }
-          ColumnLayout { id: phCol; width: parent.width; spacing: mainCol.spacing }
-        }
-      }
-      // ---- trimmed built-in sections ------------------------------------------
-      // A built-in section with a trim goes into a clipping box whose content is
-      // shifted up by the top trim and cut short by the bottom one. Untrimmed
-      // sections stay as they are. (Widget sections trim themselves.)
-      function isTrimmable(id) { return id !== "apps" && id !== "running" && String(id).indexOf("w:") !== 0 }
-      readonly property var trimmedIds: []   // a tile's size is its trim now
-      onTrimmedIdsChanged: Qt.callLater(win.applySectionOrder)
-      property var trimBoxes: ({})
-      property int trimRev: 0
-      Component {
-        id: trimBoxComp
-        Item {
-          id: tb
-          property string sid: ""
-          readonly property alias col: tbCol
-          readonly property real cutTop: root.cropOf(sid, "top")
-          readonly property real cutBottom: root.cropOf(sid, "bottom")
-          Layout.fillWidth: true
-          Layout.preferredHeight: Math.max(0, tbCol.implicitHeight - cutTop - cutBottom)
-          visible: root.sectionShown(sid) || root.editing
-          clip: true
-          onYChanged: win.trimRev++
-          onHeightChanged: win.trimRev++
-          ColumnLayout { id: tbCol; y: -tb.cutTop; width: tb.width; spacing: mainCol.spacing }
-        }
-      }
-      function trimBox(id) {
-        if (!win.trimBoxes[id]) {
-          var b = trimBoxComp.createObject(slotParking, { sid: id })
-          var bs = Object.assign({}, win.trimBoxes); bs[id] = b; win.trimBoxes = bs
-        }
-        return win.trimBoxes[id]
-      }
-      // a section's untrimmed height (the trim handles can't cut past it)
-      function sectionFullH(id) {
-        if (String(id).indexOf("w:") === 0) { var x = win.extraItems[id]; return x ? x.fullH : 0 }
-        if (win.trimBoxes[id] && win.trimmedIds.indexOf(id) !== -1) return win.trimBoxes[id].col.implicitHeight
-        var parts = win.sectionBlocks()[id] || [], h = 0, n = 0
-        parts.forEach(function(it) { if (it && it.visible) { h += it.height; n++ } })
-        return h + Math.max(0, n - 1) * mainCol.spacing
-      }
-      function sectionBlocks() {
-        var blocks = {
-          clock: [secClock, secCalendar], status: [secStatus], system: [secStats, secNet], workspaces: [secWs], search: [secSearch], media: [secMedia], notifications: [secNotif],
-          apps: [menuList, pinTiles], running: [runHeader, appList], tray: [trayPanel, secTray], bottom: [dockCol, bottomSep, secBottom]
-        }
-        for (var key in win.extraItems) blocks[key] = [win.extraItems[key]]
-        return blocks
-      }
-      function pinParts(id) {
-        if (!win.pinHolders[id]) {
-          var h = pinHolderComp.createObject(pinLayer, { sid: id })
-          var sl = pinSlotComp.createObject(slotParking, { holder: h })
-          h.slot = sl
-          var hs = Object.assign({}, win.pinHolders); hs[id] = h; win.pinHolders = hs
-          var ss = Object.assign({}, win.pinSlots); ss[id] = sl; win.pinSlots = ss
-        }
-        return { holder: win.pinHolders[id], slot: win.pinSlots[id] }
-      }
       // where the separator above the bottom row is in the window (the overlays
       // that open above the bottom row sit on it); it may be scrolled or pinned
       readonly property real bottomEdgeY: {
@@ -3892,293 +3757,8 @@ Item {
         function onTileIdsChanged() { Qt.callLater(win.applySectionOrder) }
       }
 
-      // -- edit mode: a labelled outline on each section; clicking one picks it --
+      // edit mode is on this monitor (the tiles themselves are the editor: tileGrid)
       readonly property bool editHere: root.editing && root.editMonitor === win.monitorName
-      Item {
-        id: editOverlay
-        anchors.fill: parent
-        z: 60
-        visible: false   // the old outline editor; edit mode is the tiles' own now (tileGrid)
-        // dragging a section to a new place
-        property string dragId: ""
-        property real dragY: 0
-        property real grabY: 0
-        property int dropIndex: -1
-        property bool dropHide: false     // dragged past the sidebar's edge
-        function dropIndexAt(y) {
-          var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
-          var n = 0
-          for (var i = 0; i < others.length; i++) {
-            var b = editOverlay.boxes[others[i]]
-            if (y > b.y + b.h / 2) n = i + 1
-          }
-          return n
-        }
-        readonly property real dropLineY: {
-          if (dragId === "" || dropIndex < 0) return -100
-          var others = root.sectionOrder.filter(function(id) { return id !== editOverlay.dragId && editOverlay.boxes[id] })
-          if (others.length === 0) return -100
-          if (dropIndex === 0) return editOverlay.boxes[others[0]].y - 4
-          var b = editOverlay.boxes[others[Math.min(dropIndex, others.length) - 1]]
-          return b.y + b.h + 3
-        }
-        function finishDrag() {
-          var id = editOverlay.dragId
-          var idx = editOverlay.dropIndex
-          var hide = editOverlay.dropHide
-          editOverlay.dragId = ""
-          editOverlay.dropIndex = -1
-          editOverlay.dropHide = false
-          if (!id) return
-          if (hide) { root.removeSection(id); return }
-          if (idx < 0) return
-          var order = root.sectionOrder.filter(function(x) { return x !== id })
-          // the index counts sections with outlines; map it onto the full order
-          var shown = order.filter(function(x) { return editOverlay.boxes[x] })
-          var before = idx < shown.length ? shown[idx] : null
-          var at = before ? order.indexOf(before) : order.length
-          order.splice(at, 0, id)
-          // one write: the new order, and a hidden section dropped back in shows again
-          var next = JSON.parse(JSON.stringify(root.userSettings))
-          next.order = order
-          if (root.setting(id, "show") === false) { next[id] = next[id] || {}; next[id].show = true }
-          root.saveSettings(next)
-        }
-        Rectangle {
-          readonly property var bottomBox: editOverlay.boxes["bottom"]
-          visible: false
-          z: 6
-          // on the bottom section's top edge, between its label and its ×,
-          // so it never covers the section above
-          x: (parent.width - width) / 2
-          y: bottomBox ? bottomBox.y - height / 2 : 0
-          width: addText.implicitWidth + 14
-          height: 18
-          radius: 0
-          color: addMouse.containsMouse || root.addOpen ? root.foreground : root.background
-          border.width: 1
-          border.color: root.dim
-          Text { id: addText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "+ add section"; color: addMouse.containsMouse || root.addOpen ? root.background : root.foreground
-            font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1 }
-          MouseArea { id: addMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = !root.addOpen }
-        }
-        Rectangle {
-          visible: editOverlay.dragId !== "" && !editOverlay.dropHide
-          z: 5
-          x: 10
-          width: parent.width - 20
-          height: 4
-          radius: 0
-          y: editOverlay.dropLineY
-          color: root.accent
-        }
-        // each section's extent, from the items that make it up
-        function boxFor(items) {
-          var top = 1e9, bottom = -1e9
-          for (var i = 0; i < items.length; i++) {
-            var it = items[i]
-            if (!it || !it.visible || !it.parent) continue
-            var at = it.mapToItem(editOverlay, 0, 0).y
-            top = Math.min(top, at)
-            bottom = Math.max(bottom, at + it.height)
-          }
-          return top > bottom ? null : { y: top - 6, h: bottom - top + 12 }
-        }
-        // a trimmed section is outlined by its box (what's left showing)
-        function boxItems(id, items) { return win.trimmedIds.indexOf(id) !== -1 && win.trimBoxes[id] ? [win.trimBoxes[id]] : items }
-        readonly property var boxes: {
-          var rev2 = secMedia.y + secMedia.height + secNotif.y + secNotif.height
-          var rev = mainCol.height + sideFlick.contentY + secClock.y + secStatus.y + secStatus.height + secStats.y + secNet.y + secWs.y + secSearch.y + pinTiles.y + pinTiles.height + appList.y + appList.height + secTray.y + secTray.height + secBottom.y
-          var rev3 = win.trimRev + win.trimmedIds.length
-          var out = {
-            clock: boxFor(boxItems("clock", [secClock])), status: boxFor(boxItems("status", [secStatus])), system: boxFor(boxItems("system", [secStats, secNet])),
-            workspaces: boxFor(boxItems("workspaces", [secWs])), search: boxFor(boxItems("search", [secSearch])), media: boxFor(boxItems("media", [secMedia])),
-            notifications: boxFor(boxItems("notifications", [secNotif])), apps: boxFor([pinTiles]), running: boxFor([runHeader, appList]), tray: boxFor(boxItems("tray", [secTray])), bottom: boxFor(boxItems("bottom", [secBottom]))
-          }
-          for (var key in win.extraItems) { var xi = win.extraItems[key]; var dep = xi.y + xi.height; out[key] = boxFor([xi]) }
-          return out
-        }
-        Repeater {
-          model: root.editSections
-          Item {
-            id: ebox
-            required property var modelData
-            readonly property var box: editOverlay.boxes[modelData.id]
-            readonly property bool picked: root.editSection === modelData.id
-            readonly property bool hiddenSec: root.setting(modelData.id, "show") === false
-            readonly property bool dragged: editOverlay.dragId === modelData.id
-            visible: !!box
-            x: 8
-            y: dragged ? editOverlay.dragY - editOverlay.grabY : (box ? box.y : 0)
-            z: dragged ? 4 : 0
-            opacity: dragged ? (editOverlay.dropHide ? 0.45 : 0.85) : 1
-            width: parent.width - 16
-            height: box ? box.h : 0
-            // Metro: each section becomes a tile laid over it, like a start screen being
-            // rearranged. The rest shrink back and fade; the one being edited lifts in
-            // the accent colour. (The real section still shows faintly underneath.)
-            readonly property bool lifted: ebox.picked || ebox.dragged
-            Rectangle {
-              // a soft shadow under the lifted tile
-              visible: ebox.lifted
-              x: 6; y: 9
-              width: parent.width; height: parent.height
-              color: "#000000"
-              opacity: 0.45
-            }
-            Rectangle {
-              id: etile
-              anchors.fill: parent
-              scale: ebox.lifted ? 1.03 : (eMouse.containsMouse ? 0.97 : 0.94)
-              Behavior on scale { NumberAnimation { duration: Style.duration(140); easing.type: Easing.OutCubic } }
-              color: ebox.lifted ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.86)
-                   : Qt.rgba(0.13, 0.13, 0.13, ebox.hiddenSec ? 0.55 : 0.8)
-              border.width: ebox.hiddenSec && !ebox.lifted ? 1 : 0
-              border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
-              Text {
-                x: 12
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: Math.max(2, Math.min(8, parent.height / 2 - 14))
-                width: parent.width - 24
-                elide: Text.ElideRight
-                textFormat: Text.PlainText
-                text: String(ebox.modelData.label).toLowerCase()
-                color: "#FFFFFF"
-                opacity: ebox.hiddenSec && !ebox.lifted ? 0.55 : 1
-                font.family: root.metroFont; font.weight: Font.Light
-                font.pixelSize: Math.max(13, Math.min(22, parent.height - 14))
-              }
-              Text {
-                visible: parent.height >= 44
-                x: 12; y: 8
-                textFormat: Text.PlainText
-                text: ebox.dragged && editOverlay.dropHide ? "release to hide"
-                    : ebox.picked ? "editing" : (ebox.hiddenSec ? "hidden" : "")
-                color: "#FFFFFF"
-                opacity: 0.8
-                font.family: root.metroFont; font.pixelSize: 12
-              }
-            }
-            // trim handles: drag the top edge down or the bottom edge up to cut that much off
-            Repeater {
-              model: ebox.picked && win.isTrimmable(ebox.modelData.id) && !ebox.dragged ? ["top", "bottom"] : []
-              Rectangle {
-                id: trimHandle
-                required property string modelData
-                readonly property string sid: ebox.modelData.id
-                z: 5
-                width: 44; height: 8; radius: 0
-                x: (parent.width - width) / 2 + (modelData === "top" ? 40 : 0)
-                y: modelData === "top" ? -height / 2 : parent.height - height / 2
-                color: trimMouse.containsMouse || trimMouse.pressed ? root.foreground : root.background
-                border.width: 1
-                border.color: root.foreground
-                Rectangle { anchors.centerIn: parent; width: 16; height: 1; color: trimMouse.containsMouse || trimMouse.pressed ? root.background : root.foreground }
-                MouseArea {
-                  id: trimMouse
-                  anchors.fill: parent
-                  anchors.margins: -4
-                  hoverEnabled: true
-                  preventStealing: true
-                  cursorShape: Qt.SizeVerCursor
-                  property real startY: 0
-                  property real startTop: 0
-                  property real startBottom: 0
-                  onPressed: function(mouse) {
-                    startY = mapToItem(editOverlay, mouse.x, mouse.y).y
-                    startTop = root.cropOf(trimHandle.sid, "top")
-                    startBottom = root.cropOf(trimHandle.sid, "bottom")
-                    root.cropDrag = { id: trimHandle.sid, top: startTop, bottom: startBottom }
-                  }
-                  onPositionChanged: function(mouse) {
-                    if (!pressed) return
-                    var dy = mapToItem(editOverlay, mouse.x, mouse.y).y - startY
-                    var full = win.sectionFullH(trimHandle.sid)
-                    var t = startTop, b = startBottom
-                    if (trimHandle.modelData === "top") t = Math.max(0, Math.min(startTop + dy, full - b - 8))
-                    else b = Math.max(0, Math.min(startBottom - dy, full - t - 8))
-                    root.cropDrag = { id: trimHandle.sid, top: Math.round(t), bottom: Math.round(b) }
-                  }
-                  onReleased: {
-                    var d = root.cropDrag
-                    root.cropDrag = null
-                    if (d) root.saveCrop(d.id, d.top, d.bottom)
-                  }
-                  onCanceled: root.cropDrag = null
-                }
-              }
-            }
-            // running apps: drag the bottom edge to set the list's height (double-click: fit all)
-            Rectangle {
-              visible: ebox.modelData.id === "running" && ebox.picked && !ebox.dragged
-              z: 5
-              width: 56; height: 10
-              x: (parent.width - width) / 2
-              y: parent.height - height / 2
-              color: runResize.containsMouse || runResize.pressed ? root.accent : "#FFFFFF"
-              Rectangle { anchors.centerIn: parent; width: 24; height: 2; color: runResize.containsMouse || runResize.pressed ? "#FFFFFF" : "#000000" }
-              MouseArea {
-                id: runResize
-                anchors.fill: parent
-                anchors.margins: -5
-                hoverEnabled: true
-                preventStealing: true
-                cursorShape: Qt.SizeVerCursor
-                property real startY: 0
-                property real startH: 0
-                onPressed: function(mouse) { startY = mapToItem(editOverlay, mouse.x, mouse.y).y; startH = appList.height; root.runMaxDrag = Math.round(startH) }
-                onPositionChanged: function(mouse) {
-                  if (!pressed) return
-                  var dy = mapToItem(editOverlay, mouse.x, mouse.y).y - startY
-                  root.runMaxDrag = Math.max(root.rowH, Math.round((startH + dy) / 2) * 2)
-                }
-                onReleased: { var v = root.runMaxDrag; root.runMaxDrag = -1; if (v >= 0) root.setSetting("running", "maxH", v) }
-                onCanceled: root.runMaxDrag = -1
-                onDoubleClicked: { root.runMaxDrag = -1; root.setSetting("running", "maxH", 0) }
-              }
-            }
-            // round ✕ to hide the section, on the lifted tile's corner (Windows Phone's unpin)
-            Rectangle {
-              visible: ebox.modelData.id !== "bottom" && !ebox.dragged && (ebox.picked || eMouse.containsMouse)
-              z: 3
-              x: parent.width - width / 2 - 6
-              y: -height / 2 + 4
-              width: 28; height: 28; radius: 14
-              color: xRemMouse.containsMouse ? root.accent : "#FFFFFF"
-              Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: "\u2715"; color: xRemMouse.containsMouse ? "#FFFFFF" : "#000000"; font.family: root.metroFont; font.pixelSize: 13 }
-              MouseArea { id: xRemMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.removeSection(ebox.modelData.id) }
-            }
-            MouseArea {
-              id: eMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: ebox.dragged ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-              acceptedButtons: Qt.LeftButton
-              preventStealing: true
-              property real pressY: 0
-              property bool moved: false
-              onPressed: function(mouse) { pressY = mouse.y; moved = false }
-              onPositionChanged: function(mouse) {
-                if (!(pressedButtons & Qt.LeftButton)) return
-                var p = mapToItem(editOverlay, mouse.x, mouse.y)
-                if (!ebox.dragged && Math.abs(mouse.y - pressY) > 8) {
-                  moved = true
-                  editOverlay.grabY = pressY
-                  editOverlay.dragId = ebox.modelData.id
-                  root.editSection = ebox.modelData.id
-                }
-                if (!ebox.dragged) return
-                editOverlay.dragY = p.y
-                editOverlay.dropHide = ebox.modelData.id !== "bottom" && p.x > editOverlay.width + 12
-                editOverlay.dropIndex = editOverlay.dropHide ? -1 : editOverlay.dropIndexAt(p.y)
-              }
-              onReleased: if (ebox.dragged) editOverlay.finishDrag()
-              onCanceled: { editOverlay.dragId = ""; editOverlay.dropIndex = -1; editOverlay.dropHide = false }
-              onClicked: if (!moved) root.editSection = ebox.modelData.id
-            }
-          }
-        }
-      }
 
       // -- the editor, next to the sidebar ------------------------------------------
       // Metro editor controls. A two-way on/off (or show/hide) choice is a Windows
@@ -4407,35 +3987,6 @@ Item {
               font.family: root.metroFont; font.pixelSize: 46; font.weight: Font.Light
             }
 
-            RowLayout {
-              visible: false
-              Layout.fillWidth: true
-              Text { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Edit sidebar"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: 14; font.bold: true }
-              Rectangle {
-                implicitWidth: cancelText.implicitWidth + 18; implicitHeight: 24; radius: 0
-                color: cancelMouse.containsMouse ? root.faint : "transparent"
-                border.width: 1; border.color: root.dim
-                Text { id: cancelText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Cancel"; color: cancelMouse.containsMouse ? root.foreground : root.dim; font.family: root.metroFont; font.pixelSize: 14 }
-                MouseArea { id: cancelMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.cancelEditing() }
-              }
-              Rectangle {
-                Layout.leftMargin: 4
-                implicitWidth: saveText.implicitWidth + 18; implicitHeight: 24; radius: 0
-                color: saveMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.8) : root.foreground
-                Text { id: saveText; anchors.centerIn: parent; textFormat: Text.PlainText; text: "Save"; color: root.background; font.family: root.metroFont; font.pixelSize: 14; font.bold: true }
-                MouseArea { id: saveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveEditing() }
-              }
-            }
-            Text {
-              Layout.topMargin: 6
-              Layout.bottomMargin: 4
-              visible: false
-              textFormat: Text.PlainText
-              text: "+ Add section"
-              color: addLinkMouse.containsMouse ? root.foreground : root.dim
-              font.family: root.metroFont; font.pixelSize: 14
-              MouseArea { id: addLinkMouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.addOpen = true }
-            }
 
             // the "Add section" picker (takes the place of the section's settings)
             ColumnLayout {
@@ -4858,30 +4409,6 @@ Item {
               Text { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: "The first icon is the sidebar's own: click it for quick settings. To show a plugin's panel in the sidebar instead, add it as a section (+ add section)."; color: root.dim; font.family: root.metroFont; font.pixelSize: 13 }
             }
 
-            // built-in sections: trim (widget sections have it in their own panel above)
-            StepRow { visible: false; label: "Trim top"; value: root.cropOf(root.editSection, "top"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, v, root.cropOf(root.editSection, "bottom")) } }
-            StepRow { visible: false; label: "Trim bottom"; value: root.cropOf(root.editSection, "bottom"); step: 2; min: 0; max: 400; suffix: " px"; onChanged: function(v) { root.saveCrop(root.editSection, root.cropOf(root.editSection, "top"), v) } }
-            Text {
-              visible: false
-              textFormat: Text.PlainText; text: "Reset trim"
-              color: resetTrim2Mouse.containsMouse ? root.foreground : root.dim
-              font.family: root.metroFont; font.pixelSize: 13
-              MouseArea { id: resetTrim2Mouse; anchors.fill: parent; anchors.margins: -3; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.saveCrop(root.editSection, 0, 0) }
-            }
-            // every section but the app list can be pinned
-            OptRow {
-              visible: false
-              label: "Pin in position"
-              options: [[true, "on"], [false, "off"]]
-              current: root.setting(root.editSection, "pinned") === true
-              onPicked: function(v) { root.setSetting(root.editSection, "pinned", v) }
-            }
-            Text {
-              visible: false
-              Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText
-              text: "Stays in view when the sidebar scrolls; the rest scrolls behind it. (Pins rest while editing.)"
-              color: root.dim; font.family: root.metroFont; font.pixelSize: 13
-            }
             Text {
               visible: root.editTab === "section" && !root.addOpen && root.editSection !== "bottom" && root.editSection.indexOf("w:") !== 0
               Layout.topMargin: 4
@@ -4896,7 +4423,6 @@ Item {
             visible: root.editTab === "sidebar" && !root.addOpen
             Layout.fillWidth: true
             spacing: 12
-            EdHeading { text: "WHOLE SIDEBAR"; visible: false }
             StepRow { label: "Width"; value: root.sidebarWidth; step: 20; min: 200; max: 560; suffix: " px"; onChanged: function(v) { root.setSetting("", "width", v) } }
             OptRow { label: "Background"; options: [["solid", "solid"], ["glass", "see-through"]]; current: root.setting("general", "background"); onPicked: function(v) { root.setSetting("general", "background", v) } }
             OptRow { label: "Panel colour"; options: [["black", "black"], ["theme", "theme"]]; current: root.setting("general", "panelColor"); onPicked: function(v) { root.setSetting("general", "panelColor", v) } }
@@ -5025,50 +4551,6 @@ Item {
               }
             }
           }
-          }
-          // the old app bar (edit mode has its own along the bottom of the column: editBar)
-          Rectangle {
-            visible: false
-            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-            height: 78
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
-            Row {
-              anchors.centerIn: parent
-              spacing: 26
-              Repeater {
-                model: [["+", "add", "add"], ["\u21ba", "undo", "undo"], ["\u2715", "cancel", "cancel"], ["\u2713", "save", "save"]]
-                Column {
-                  id: edBtn
-                  required property var modelData
-                  readonly property bool off: modelData[2] === "undo" && root.editHistory.length === 0
-                  readonly property bool on: modelData[2] === "add" && root.addOpen
-                  spacing: 4
-                  opacity: off ? 0.35 : 1
-                  Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 38; height: 38; radius: 19
-                    color: edBtn.on || edBtnMouse.pressed ? root.foreground : "transparent"
-                    border.width: 2
-                    border.color: root.foreground
-                    Text { anchors.centerIn: parent; textFormat: Text.PlainText; text: edBtn.modelData[0]; color: edBtn.on || edBtnMouse.pressed ? root.background : root.foreground; font.family: root.metroFont; font.pixelSize: 18 }
-                    MouseArea {
-                      id: edBtnMouse
-                      anchors.fill: parent
-                      enabled: !edBtn.off
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: {
-                        var k = edBtn.modelData[2]
-                        if (k === "add") root.addOpen = !root.addOpen
-                        else if (k === "undo") root.undoEdit()
-                        else if (k === "cancel") root.cancelEditing()
-                        else root.saveEditing()
-                      }
-                    }
-                  }
-                  Text { anchors.horizontalCenter: parent.horizontalCenter; textFormat: Text.PlainText; text: edBtn.modelData[1]; color: root.foreground; font.family: root.metroFont; font.pixelSize: 12 }
-                }
-              }
-            }
           }
         }
         }
@@ -5708,7 +5190,6 @@ Item {
           id: secStatus
           readonly property bool anyShown: root.statusBatteryShown || statusRep.shownCount > 0
           // right under a showing clock it tucks up against it, as one block
-          readonly property bool underClock: root.sectionShown("clock") && root.sectionOrder.indexOf("status") === root.sectionOrder.indexOf("clock") + 1
           // Stays "visible" while empty and collapses to nothing instead, so the
           // hosted widgets' own visibility (e.g. update available) can be read.
           visible: root.sectionShown("status")
