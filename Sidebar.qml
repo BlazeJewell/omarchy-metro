@@ -1095,6 +1095,8 @@ Item {
     function settings(section: string) { root.openSettings(section) }
     function settingsPage(page: string) { if (!root.qsOpen) root.openSettings(""); root.qsPage = page }
     function searchFor(text: string) { root.enterSearch(); root.query = text }
+    function openApps() { root.enterSearch(); root.openMenu("apps") }   // jake.metro: the A–Z app list
+    function jumpGrid() { if (root.activeMenu !== "apps") { root.enterSearch(); root.openMenu("apps") } root.jumpOpen = !root.jumpOpen }
   }
 
   function toggleSearch() { if (root.searching) root.exitSearch(); else root.enterSearch() }
@@ -1150,6 +1152,7 @@ Item {
   Timer { id: guardRerun; interval: 200; onTriggered: root.evaluateGuards() }
   // Conditions can change (installs, toggles), so re-check each time it opens.
   onSearchingChanged: {
+    if (!root.searching) root.jumpOpen = false   // jake.metro: the app list's jump grid
     if (searching) qsOpen = false
     if (searching && defaultMenuSettled && userMenuSettled) evaluateGuards()
   }
@@ -1190,6 +1193,22 @@ Item {
     for (var i = 0; i < all.length; i++) if (!all[i].noDisplay) out.push(all[i])
     return out
   }
+  function groupLetter(label) { var c = String(label || "").trim().charAt(0).toLowerCase(); return /[a-z]/.test(c) ? c : "#" }
+  function letterRow(L) {
+    return { kind: "letter", itemId: "letter:" + L, label: L, icon: "", iconFont: "", detail: "",
+             target: "", action: "", provider: "", disabled: false, childCount: 0, score: 0 }
+  }
+  // the app list's jump grid (Windows Phone: click a letter tile, pick a letter)
+  property bool jumpOpen: false
+  readonly property var jumpLetters: root.searchRows.filter(function(r) { return r.kind === "letter" }).map(function(r) { return r.label })
+  function jumpTo(L) {
+    var i = root.searchRows.map(function(r) { return r.itemId }).indexOf("letter:" + L)
+    root.jumpOpen = false
+    if (i >= 0) { root.selectedIndex = i; root.jumpRequest = i; root.jumpRequestRev++ }
+  }
+  property int jumpRequest: -1
+  property int jumpRequestRev: 0
+  onActiveMenuChanged: root.jumpOpen = false
   function appRow(entry, score, detail) {
     return { kind: "app", itemId: "app:" + entry.id, label: entry.name, icon: "", iconFont: "", detail: detail || "",
              target: "", action: "", provider: "", disabled: false, childCount: 0, score: score, entry: entry }
@@ -1224,8 +1243,15 @@ Item {
       rows.sort(function(x, y) { return x.score - y.score || String(x.label).localeCompare(String(y.label)) })
       rows = rows.slice(0, 80)
     } else if (active === "apps") {
-      rows = root.launchableApps().map(function(e) { return root.appRow(e, 0, "") })
-      rows.sort(function(x, y) { return String(x.label).toLowerCase().localeCompare(String(y.label).toLowerCase()) })
+      var appRows = root.launchableApps().map(function(e) { return root.appRow(e, 0, "") })
+      appRows.sort(function(x, y) { return String(x.label).toLowerCase().localeCompare(String(y.label).toLowerCase()) })
+      // jake.metro: Windows Phone's app list: a letter tile starts each group (click one for the jump grid)
+      var last = ""
+      appRows.forEach(function(r) {
+        var L = root.groupLetter(r.label)
+        if (L !== last) { rows.push(root.letterRow(L)); last = L }
+        rows.push(r)
+      })
     } else {
       for (var j = 0; j < order.length; j++) {
         var c = items[order[j]]
@@ -1256,6 +1282,7 @@ Item {
   function activateSearchRow(row) {
     if (!row || row.disabled) return
     if (row.kind === "back") { root.menuBack(); return }
+    if (row.kind === "letter") { root.jumpOpen = true; return }
     if (row.kind === "app") {
       // Same as the app list: minimize what's showing first, so it opens full.
       var launch = root.launchCommand(row.entry)
@@ -3589,8 +3616,8 @@ Item {
             visible: root.setting(xsec.secId, "title") === true   // off unless turned on in the editor
             Layout.fillWidth: true
             textFormat: Text.PlainText
-            text: (xsec.collapsed ? "▸ " : "▾ ") + root.widgetName(xsec.wid).toUpperCase()
-            color: xTitleMouse.containsMouse ? root.foreground : root.dim; font.family: root.fontFamily; font.pixelSize: 9; font.letterSpacing: 1
+            text: root.widgetName(xsec.wid).toLowerCase() + (xsec.collapsed ? "  ›" : "")
+            color: xTitleMouse.containsMouse ? root.foreground : root.dim; font.family: root.metroFont; font.pixelSize: 14
             elide: Text.ElideRight
             // click the title to fold the section
             MouseArea { id: xTitleMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.setSetting(xsec.secId, "collapsed", !xsec.collapsed) }
@@ -3750,7 +3777,7 @@ Item {
       // Put the column's pieces in the saved section order (each section moves
       // with its parts; the panels that open above the bottom row go with it).
       function applySectionOrder() { win.applyTileParents() }
-      Component.onCompleted: Qt.callLater(win.applySectionOrder)
+      Component.onCompleted: { Qt.callLater(win.applySectionOrder); Qt.callLater(win.turnstile) }
       Connections {
         target: root
         function onSectionOrderChanged() { Qt.callLater(win.applySectionOrder) }
@@ -4452,6 +4479,7 @@ Item {
               }
             }
             // jake.metro: medium tiles flip, wide tiles peek (small ones stay still)
+            OptRow { label: "Turnstile"; options: [[true, "on"], [false, "off"]]; current: root.setting("apps", "turnstile") !== false; onPicked: function(v) { root.setSetting("apps", "turnstile", v) } }
             OptRow { label: "Live tiles"; options: [[true, "on"], [false, "off"]]; current: root.setting("apps", "liveTiles") !== false; onPicked: function(v) { root.setSetting("apps", "liveTiles", v) } }
             OptRow { label: "Auto-hide"; options: [[true, "on"], [false, "off"]]; current: root.setting("general", "autohide"); onPicked: function(v) { root.setSetting("general", "autohide", v) } }
             OptRow { visible: root.setting("general", "autohide") === true; Layout.leftMargin: 12; label: "› When it appears"; options: [["float", "over windows"], ["push", "push windows"]]; current: root.setting("general", "autohideMode"); onPicked: function(v) { root.setSetting("general", "autohideMode", v) } }
@@ -4701,6 +4729,28 @@ Item {
       readonly property bool liveOn: root.winAnimMs > 0 && !win.editHere && !win.tucked && root.setting("apps", "liveTiles") !== false
       property int liveTick: 0
       Timer { interval: 1000; repeat: true; running: win.liveOn; onTriggered: win.liveTick++ }
+      // ---- jake.metro: turnstile (Metro's page entrance) ------------------------
+      // the tiles swing in on a hinge at the sidebar's left edge, top rows first, when
+      // the sidebar comes out, and on the way back from search or edit mode
+      property real turnT: 1
+      NumberAnimation { id: turnAnim; target: win; property: "turnT"; from: 0; to: 1; duration: Math.round(root.winAnimMs * 1.8) }
+      function turnstile() { if (root.winAnimMs > 0 && root.setting("apps", "turnstile") !== false) turnAnim.restart() }
+      function turnAngle(item) {
+        if (win.turnT >= 1 || !item) return 0
+        var rowLag = Math.max(0, Math.min(1, (item.y - sideFlick.contentY) / Math.max(1, sideFlick.height)))
+        var p = Math.max(0, Math.min(1, win.turnT * 1.6 - rowLag * 0.6))
+        return 75 * Math.pow(1 - p, 3)
+      }
+      component Turnstile: Rotation {
+        property Item tile: null
+        origin.x: tile ? -tile.x : 0
+        origin.y: tile ? tile.height / 2 : 0
+        axis { x: 0; y: 1; z: 0 }
+        angle: win.turnAngle(tile)
+      }
+      onTuckedChanged: if (!win.tucked) win.turnstile()
+      onSearchHereChanged: if (!win.searchHere) win.turnstile()
+      onEditHereChanged: if (!win.editHere) win.turnstile()
       function tidHash(s) { var h = 7; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 100003; return h }
       component LiveFace: Item {
         id: lf
@@ -4824,7 +4874,7 @@ Item {
           width: r ? r.w : 0
           height: r ? r.h : 0
           z: win.dragId === tid ? 5 : 0
-          transform: TileZoom { tid: tbx.tid; tile: tbx }
+          transform: [ TileZoom { tid: tbx.tid; tile: tbx }, Turnstile { tile: tbx } ]
           clip: true
           Behavior on x { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
           Behavior on y { enabled: win.editHere && win.dragId !== tbx.tid; NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
@@ -5514,7 +5564,8 @@ Item {
                   else if (event.key === Qt.Key_Up || (event.key === Qt.Key_P && (event.modifiers & Qt.ControlModifier)) || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) { root.moveSelection(-1); event.accepted = true }
                   else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { root.activateSearchRow(root.searchRows[root.selectedIndex]); event.accepted = true }
                   else if (event.key === Qt.Key_Escape) {
-                    if (text) text = ""
+                    if (root.jumpOpen) root.jumpOpen = false
+                    else if (text) text = ""
                     else if (root.activeMenu !== "root") root.menuBack()
                     else root.exitSearch()
                     event.accepted = true
@@ -5700,6 +5751,42 @@ Item {
           model: visible ? root.searchRows : []
           currentIndex: root.selectedIndex
           onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+          // jake.metro: a letter picked in the jump grid comes to the top
+          Connections {
+            target: root
+            function onJumpRequestRevChanged() { if (root.jumpRequest >= 0) menuList.positionViewAtIndex(root.jumpRequest, ListView.Beginning) }
+          }
+          // the jump grid: every letter as a tile, lit when there are apps under it
+          Rectangle {
+            parent: menuList
+            anchors.fill: parent
+            z: 10
+            visible: root.jumpOpen && menuList.visible
+            color: Qt.rgba(root.background.r, root.background.g, root.background.b, 0.95)
+            MouseArea { anchors.fill: parent; onClicked: root.jumpOpen = false; onWheel: function(w) { w.accepted = true } }
+            Grid {
+              id: jumpGrid
+              x: 12; y: 12
+              columns: 4; spacing: 8
+              readonly property real cell: Math.floor((parent.width - 24 - 3 * 8) / 4)
+              Repeater {
+                model: ["#", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"]
+                Rectangle {
+                  required property string modelData
+                  readonly property bool has: root.jumpLetters.indexOf(modelData) !== -1
+                  width: jumpGrid.cell; height: jumpGrid.cell
+                  color: has ? (jMouse.containsMouse ? Qt.lighter(root.accent, 1.2) : root.accent) : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                  Text {
+                    x: 7; anchors.bottom: parent.bottom; anchors.bottomMargin: 2
+                    textFormat: Text.PlainText; text: parent.modelData
+                    color: parent.has ? "#FFFFFF" : root.dim
+                    font.family: root.metroFont; font.pixelSize: Math.round(jumpGrid.cell * 0.5); font.weight: Font.Light
+                  }
+                  MouseArea { id: jMouse; anchors.fill: parent; enabled: parent.has; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.jumpTo(parent.modelData) }
+                }
+              }
+            }
+          }
 
           delegate: Item {
             id: mrow
@@ -5707,10 +5794,11 @@ Item {
             required property int index
             readonly property bool selected: index === root.selectedIndex
             // Metro: the menu itself is big lowercase type; results while typing are smaller with icons
-            readonly property bool typed: !!root.query
+            readonly property bool typed: !!root.query || root.activeMenu === "apps"
             readonly property bool isApp: modelData.provider === "apps"
+            readonly property bool isLetter: modelData.kind === "letter"
             width: menuList.width
-            height: typed ? (modelData.detail ? 50 : 40) : 46
+            height: isLetter ? 52 : typed ? (modelData.detail ? 50 : 40) : 46
             opacity: modelData.disabled ? 0.45 : 1
 
             Rectangle {
@@ -5719,7 +5807,21 @@ Item {
               color: mrow.selected ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22) : "transparent"
             }
             Rectangle { visible: mrow.selected; width: 4; height: parent.height; color: root.accent }
+            // a letter tile: the letter in the accent colour in an accent-edged square
+            Rectangle {
+              visible: mrow.isLetter
+              x: 12; anchors.verticalCenter: parent.verticalCenter
+              width: 40; height: 40
+              color: "transparent"
+              border.width: 2; border.color: root.accent
+              Text {
+                x: 5; anchors.bottom: parent.bottom; anchors.bottomMargin: 2
+                textFormat: Text.PlainText; text: mrow.modelData.label
+                color: root.accent; font.family: root.metroFont; font.pixelSize: 26; font.weight: Font.Light
+              }
+            }
             RowLayout {
+              visible: !mrow.isLetter
               anchors.fill: parent
               anchors.leftMargin: 12
               anchors.rightMargin: 6
@@ -5732,6 +5834,12 @@ Item {
                 color: mrow.modelData.kind === "back" ? "transparent" : root.accent
                 border.width: mrow.modelData.kind === "back" ? 2 : 0
                 border.color: root.foreground
+                IconImage {
+                  visible: mrow.modelData.kind === "app" && !!mrow.modelData.entry
+                  anchors.centerIn: parent
+                  width: 22; height: 22
+                  source: visible ? root.iconFor(mrow.modelData.entry.icon || mrow.modelData.entry.id) : ""
+                }
                 Text {
                   anchors.centerIn: parent
                   textFormat: Text.PlainText
@@ -5831,7 +5939,7 @@ Item {
               color: root.accent
               // pressed tiles give a little, like Metro's tilt
               scale: tMouse.pressed && !tMouse.dragging ? 0.96 : 1
-              transform: TileZoom { tid: tile.tid; tile: tile }
+              transform: [ TileZoom { tid: tile.tid; tile: tile }, Turnstile { tile: tile } ]
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               border.width: focused || dropHere ? 2 : 0
               border.color: dropHere ? root.foreground : "#FFFFFF"
@@ -5971,7 +6079,7 @@ Item {
               clip: true
               color: d.hot ? root.accent : root.tileGround
               scale: stMouse.pressed ? 0.96 : 1
-              transform: TileZoom { tid: stile.tid; tile: stile }
+              transform: [ TileZoom { tid: stile.tid; tile: stile }, Turnstile { tile: stile } ]
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               readonly property bool wideTile: stile.r.w > pinTiles.unit * 2 + pinTiles.gap + 1
               readonly property var backHist: stile.modelData.key === "net" ? root.txHistory : (root.statHistory[stile.modelData.key] || [])
@@ -6108,7 +6216,7 @@ Item {
               color: root.accent
               clip: true
               scale: wtMouse.pressed ? 0.96 : 1
-              transform: TileZoom { tid: wtile.tid; tile: wtile }
+              transform: [ TileZoom { tid: wtile.tid; tile: wtile }, Turnstile { tile: wtile } ]
               Behavior on scale { NumberAnimation { duration: Style.duration(90); easing.type: Easing.OutCubic } }
               MouseArea {
                 id: wtMouse
