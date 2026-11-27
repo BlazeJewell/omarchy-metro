@@ -5715,7 +5715,9 @@ Item {
           opacity: root.sectionOpacity("search")
           readonly property bool active: root.searching && root.searchMonitor === win.monitorName
           Layout.fillWidth: true
-          Layout.preferredHeight: 40
+          // 40 px, or less when its tile is shorter (a narrow sidebar makes one grid row ~28 px)
+          readonly property real tileH: { var r = win.tileRects.tiles["search"]; return r ? r.h : 40 }
+          Layout.preferredHeight: Math.max(24, Math.min(40, tileH))
           radius: 0
           // Windows Phone text box: light grey at rest, white with an accent edge while typing
           color: active ? "#FFFFFF" : (searchMouse.containsMouse ? "#D4D4D4" : "#BFBFBF")
@@ -6293,19 +6295,25 @@ Item {
                     font.family: root.metroFont; font.pixelSize: stile.roomy ? 18 : 13
                   }
                 }
+                // the second line, just under the figure's baseline (digits have no descenders);
+                // left out when it would run into the label
                 Text {
-                  visible: stile.roomy && stile.d.l2 !== ""
-                  x: 8; anchors.top: stVal.bottom; anchors.topMargin: -2
+                  id: stL2
+                  visible: stile.roomy && stile.d.l2 !== "" && y + height + 4 <= stLabel.y
+                  x: 8; y: stVal.y + stVal.baselineOffset + 6
                   width: parent.width - 16
                   textFormat: Text.PlainText; text: stile.d.l2; elide: Text.ElideRight
                   color: root.dim; font.family: root.metroFont; font.pixelSize: 13
                 }
-                // the graph (network), along the bottom above the label
+                // the graph (network), along the bottom above the label: whatever room is left
+                // between the text and the label (at most 28% of the tile), left out under 12 px
                 Row {
-                  visible: stile.roomy && !!stile.d.hist
+                  readonly property real graphTop: (stL2.visible ? stL2.y + stL2.height : stVal.y + stVal.baselineOffset + 6) + 6
+                  readonly property real room: stLabel.y - 6 - graphTop
+                  visible: stile.roomy && !!stile.d.hist && room >= 12
                   x: 8; width: parent.width - 16
                   anchors.bottom: stLabel.top; anchors.bottomMargin: 6
-                  height: Math.round(parent.height * 0.28)
+                  height: Math.max(0, Math.min(Math.round(parent.height * 0.28), room))
                   spacing: 1
                   readonly property var hist: stile.d.hist || []
                   readonly property real peak: Math.max.apply(null, [1].concat(hist))
